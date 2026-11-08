@@ -15,6 +15,7 @@ declare global {
 export type StoredParticipant = {
   id: string;
   name: string;
+  nickname?: string;
   photo: string;
   code?: string;
   recipientId?: string;
@@ -123,6 +124,7 @@ async function requirePrivateRepository(config: Configuration) {
 
 function isParticipant(value: unknown): value is StoredParticipant {
   return isRecord(value) && typeof value.id === "string" && typeof value.name === "string" &&
+    (value.nickname === undefined || typeof value.nickname === "string") &&
     typeof value.photo === "string" && (value.code === undefined || typeof value.code === "string") &&
     (value.recipientId === undefined || typeof value.recipientId === "string") &&
     (value.unavailableDays === null || (Array.isArray(value.unavailableDays) &&

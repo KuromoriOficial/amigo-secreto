@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Gift, KeyRound, LockKeyhole, Sparkles } from "lucide-react";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { apiUrl, assetUrl, pageUrl } from "../lib/frontend-paths";
 
 const YEAR = 2026;
@@ -13,16 +13,21 @@ const WEEKDAYS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 const DEMO_CODE = "482731";
 const DEMO_AVAILABILITY = `amigo-secreto-${YEAR}-demo-days`;
 const DATE_LABEL = new Intl.DateTimeFormat("pt-BR", { dateStyle: "full" });
+const REVEAL_DURATION = 2700;
+const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
 
 type Mode = "demo" | "live";
-type Profile = { name: string; photo: string };
-type RevealResult = { person: Profile; canSave: boolean; days: string[]; mode: Mode };
+type Profile = { name: string; nickname?: string; photo: string };
+type RevealResult = { person: Profile; candidates?: Profile[]; canSave: boolean; days: string[]; mode: Mode };
+type RevealAttempt = RevealResult & { code: string };
+type RevealReel = { attempt: RevealAttempt; frames: Profile[] };
 
-async function post<T>(endpoint: string, payload: object): Promise<T> {
+async function post<T>(endpoint: string, payload: object, signal?: AbortSignal): Promise<T> {
   const response = await fetch(apiUrl(endpoint), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    signal,
   });
   const data = await response.json().catch(() => null) as (T & { error?: string }) | null;
   if (!response.ok || !data) {
@@ -42,10 +47,14 @@ function demoDays(): string[] {
   }
 }
 
+function profilePhotoUrl(photo: string) {
+  return photo.startsWith("/api/") ? apiUrl(photo) : assetUrl(photo);
+}
+
 function ProfilePhoto({ person }: { person: Profile }) {
   const [failed, setFailed] = useState(false);
   const initials = person.name.trim().split(/\s+/).slice(0, 2).map((word) => Array.from(word)[0]).join("");
-  const photo = person.photo.startsWith("/api/") ? apiUrl(person.photo) : assetUrl(person.photo);
+  const photo = profilePhotoUrl(person.photo);
 
   return (
     <div className="as-photo">
@@ -55,10 +64,90 @@ function ProfilePhoto({ person }: { person: Profile }) {
   );
 }
 
+function rouletteFrames(result: RevealResult): Profile[] {
+  const deck = [...(result.candidates ?? [])];
+  const winner = deck.findIndex(({ name, nickname, photo }) => (
+    name === result.person.name && nickname === result.person.nickname && photo === result.person.photo
+  ));
+  if (winner !== -1) deck.splice(winner, 1);
+  if (!deck.length) return [];
+
+  for (let index = deck.length - 1; index > 0; index--) {
+    const other = Math.floor(Math.random() * (index + 1));
+    [deck[index], deck[other]] = [deck[other], deck[index]];
+  }
+
+  if (deck.length === 1) deck.push(result.person);
+  return Array.from({ length: Math.max(deck.length, 9) }, (_, index) => deck[index % deck.length]);
+}
+
+function elapsedForFrame(index: number, count: number) {
+  const progress = index / count;
+  return REVEAL_DURATION * (0.57 * progress + 0.43 * progress ** 3);
+}
+
+function Roulette({ reel, onFinish }: { reel: RevealReel; onFinish: (attempt: RevealAttempt) => void }) {
+  const [frameIndex, setFrameIndex] = useState(0);
+
+  useEffect(() => {
+    let index = 0;
+    let timer: number;
+    const count = reel.frames.length;
+    const motionPreference = window.matchMedia(REDUCED_MOTION);
+
+    function finish() {
+      window.clearTimeout(timer);
+      onFinish(reel.attempt);
+    }
+
+    function skipMotion(event: MediaQueryListEvent) {
+      if (event.matches) finish();
+    }
+
+    function nextFrame() {
+      const delay = elapsedForFrame(index + 1, count) - elapsedForFrame(index, count);
+      timer = window.setTimeout(() => {
+        index += 1;
+        if (index === count) {
+          finish();
+        } else {
+          setFrameIndex(index);
+          nextFrame();
+        }
+      }, delay);
+    }
+
+    nextFrame();
+    motionPreference.addEventListener("change", skipMotion);
+    return () => {
+      window.clearTimeout(timer);
+      motionPreference.removeEventListener("change", skipMotion);
+    };
+  }, [reel, onFinish]);
+
+  const person = reel.frames[frameIndex];
+  return (
+    <div className="as-reel">
+      <p className="as-reel-label" role="status"><Sparkles size={16} aria-hidden="true" /> Girando a roleta…</p>
+      <div className="as-reel-window" aria-hidden="true">
+        <div className="as-reel-frame" key={frameIndex}>
+          <ProfilePhoto person={person} />
+          <div>
+            <strong>{person.name}</strong>
+            {person.nickname && <span className="as-person-nickname">“{person.nickname}”</span>}
+          </div>
+        </div>
+      </div>
+      <div className="as-reel-progress" aria-hidden="true"><span style={{ animationDuration: `${REVEAL_DURATION}ms` }} /></div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [mode, setMode] = useState<Mode>();
   const [code, setCode] = useState("");
-  const [revealed, setRevealed] = useState<RevealResult | null>(null);
+  const [revealed, setRevealed] = useState<RevealAttempt | null>(null);
+  const [reel, setReel] = useState<RevealReel | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [month, setMonth] = useState(0);
   const [loadingReveal, setLoadingReveal] = useState(false);
@@ -67,6 +156,8 @@ export default function Home() {
   const [saveError, setSaveError] = useState("");
   const [saved, setSaved] = useState(false);
   const codeInput = useRef<HTMLInputElement>(null);
+  const revealOutput = useRef<HTMLDivElement>(null);
+  const revealRequest = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -76,26 +167,54 @@ export default function Home() {
         if (!controller.signal.aborted && (event?.mode === "demo" || event?.mode === "live")) setMode(event.mode);
       })
       .catch(() => {});
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      revealRequest.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (revealed) revealOutput.current?.focus({ preventScroll: true });
+  }, [revealed]);
+
+  const completeReveal = useCallback((attempt: RevealAttempt) => {
+    setSelected(attempt.mode === "demo" && attempt.canSave && attempt.code === DEMO_CODE ? demoDays() : attempt.days);
+    setRevealed(attempt);
+    setReel(null);
+    setSaved(false);
+    setSaveError("");
   }, []);
 
   async function reveal(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (loadingReveal) return;
+    if (revealRequest.current) return;
+    const request = new AbortController();
+    revealRequest.current = request;
     setRevealError("");
     setLoadingReveal(true);
 
     try {
-      const result = await post<RevealResult>("/api/reveal", { code });
+      const result = await post<RevealResult>("/api/reveal", { code }, request.signal);
+      if (request.signal.aborted) return;
+      const attempt = { ...result, code };
       setMode(result.mode);
-      setSelected(result.mode === "demo" && result.canSave && code === DEMO_CODE ? demoDays() : result.days);
-      setRevealed(result);
-      setSaved(false);
-      setSaveError("");
+      const frames = result.canSave && !window.matchMedia(REDUCED_MOTION).matches ? rouletteFrames(result) : [];
+
+      if (frames.length) {
+        for (const photo of new Set(frames.map((person) => person.photo))) {
+          if (photo) new Image().src = profilePhotoUrl(photo);
+        }
+        setReel({ attempt, frames });
+      } else {
+        completeReveal(attempt);
+      }
     } catch (error) {
-      setRevealError(error instanceof Error ? error.message : "Não conseguimos abrir a revelação. Tente novamente.");
+      if (!request.signal.aborted) {
+        setRevealError(error instanceof Error ? error.message : "Não conseguimos abrir a revelação. Tente novamente.");
+      }
     } finally {
-      setLoadingReveal(false);
+      if (!request.signal.aborted) setLoadingReveal(false);
+      if (revealRequest.current === request) revealRequest.current = null;
     }
   }
 
@@ -127,7 +246,7 @@ export default function Home() {
       if (revealed.mode === "demo") {
         localStorage.setItem(DEMO_AVAILABILITY, JSON.stringify(days));
       } else {
-        await post<{ ok: true }>("/api/availability", { code, days });
+        await post<{ ok: true }>("/api/availability", { code: revealed.code, days });
       }
       setSaved(true);
     } catch (error) {
@@ -174,19 +293,28 @@ export default function Home() {
             <h2 id="as-reveal-heading">Quem você tirou?</h2>
             {revealed ? (
               <div className="as-reveal-result">
-                <div className="as-person" role="status">
+                <div
+                  className={revealed.canSave ? "as-person as-person-found" : "as-person as-person-incorrect"}
+                  ref={revealOutput}
+                  role="group"
+                  tabIndex={-1}
+                  aria-labelledby="as-result-label as-result-name"
+                >
                   <ProfilePhoto person={revealed.person} />
                   <div>
-                    <p>{revealed.canSave ? "Seu amigo secreto é" : "Revelação simulada"}</p>
-                    <h3>{revealed.person.name}</h3>
+                    <p id="as-result-label">{revealed.canSave ? "Seu amigo secreto é" : "Código incorreto"}</p>
+                    <h3 id="as-result-name">{revealed.person.name}</h3>
+                    {revealed.person.nickname && <span className="as-person-nickname">“{revealed.person.nickname}”</span>}
                   </div>
                 </div>
                 <p className="as-reveal-hint">{revealed.canSave
                   ? "Guarde o segredo e marque no calendário os dias em que você não pode participar."
-                  : "Esse código mostrou um perfil fictício. Para registrar suas datas, use o código recebido do organizador."}</p>
+                  : "Confira o código recebido do organizador e tente de novo."}</p>
                 {calendarEditable && <a className="as-calendar-shortcut" href="#as-calendar-heading">Marcar meus dias <ArrowRight size={16} aria-hidden="true" /></a>}
                 <button className="as-text-button" type="button" disabled={saving} onClick={resetReveal}>Usar outro código</button>
               </div>
+            ) : reel ? (
+              <Roulette reel={reel} onFinish={completeReveal} />
             ) : (
               <>
                 <p className="as-card-description">Digite o código que você recebeu para abrir sua revelação.</p>

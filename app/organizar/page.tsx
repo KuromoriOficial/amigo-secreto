@@ -4,10 +4,11 @@ import { type ChangeEvent, type FormEvent, useEffect, useState } from "react";
 import { apiUrl, isStaticFrontend, pageUrl } from "../../lib/frontend-paths";
 import styles from "./organizar.module.css";
 
-type Participant = { id: string; name: string; photo: string; code?: string; responded: boolean };
+type Profile = { name: string; nickname?: string; photo: string };
+type Participant = Profile & { id: string; code?: string; responded: boolean };
 type Day = { date: string; available: number; unavailable: number };
 type Event = { phase: "draft" | "drawn"; participants: Participant[]; responseCount: number; dates: Day[] };
-type PhotoDraft = { id?: string; name: string; photo: string };
+type PhotoDraft = Profile & { id?: string };
 type IconName = "gift" | "arrow" | "lock" | "calendar" | "copy" | "people" | "check";
 
 const emptyDraft: PhotoDraft = { name: "", photo: "" };
@@ -33,7 +34,7 @@ async function organizerRequest(key: string, action?: "save" | "draw", participa
   const response = await fetch(apiUrl("/api/organizer"), {
     method: action ? "POST" : "GET",
     headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), ...(action ? { "Content-Type": "application/json" } : {}) },
-    body: action ? JSON.stringify({ action, participants: participants.map(({ name, photo }) => ({ name, photo })) }) : undefined,
+    body: action ? JSON.stringify({ action, participants: participants.map(({ name, nickname, photo }) => ({ name, nickname, photo })) }) : undefined,
     cache: "no-store",
     credentials: isStaticFrontend ? "omit" : "same-origin",
     signal,
@@ -169,7 +170,13 @@ export default function OrganizerPage() {
       setFormError("A lista pode ter até 32 participantes.");
       return;
     }
-    const participant = { id: draft.id ?? crypto.randomUUID(), name, photo: draft.photo, responded: false };
+    const participant = {
+      id: draft.id ?? crypto.randomUUID(),
+      name,
+      nickname: draft.nickname?.trim() || undefined,
+      photo: draft.photo,
+      responded: false,
+    };
     setRoster((current) => draft.id ? current.map((entry) => entry.id === draft.id ? participant : entry) : [...current, participant]);
     setChanged(true);
     setConfirming(false);
@@ -207,7 +214,7 @@ export default function OrganizerPage() {
   const rankedDates = (event?.dates ?? [])
     .filter((day) => month === "all" || day.date.slice(5, 7) === month)
     .sort((first, second) => Number(first.date < today) - Number(second.date < today) || first.unavailable - second.unavailable || first.date.localeCompare(second.date));
-  const draftInProgress = Boolean(draft.id || draft.name || draft.photo);
+  const draftInProgress = Boolean(draft.id || draft.name || draft.nickname || draft.photo);
 
   return (
     <div className={styles.shell}>
@@ -284,6 +291,7 @@ export default function OrganizerPage() {
                       <img className={styles.avatar} src={person.photo} alt="" width={44} height={44} />
                       <div className={styles.person}>
                         <strong>{person.name}</strong>
+                        {person.nickname && <small>Discord · {person.nickname}</small>}
                         {drawn && <small>{person.responded ? "Respondeu" : "Aguardando resposta"}</small>}
                       </div>
                       {drawn ? (
@@ -321,6 +329,8 @@ export default function OrganizerPage() {
                   <h3>{draft.id ? "Editar participante" : "Adicionar participante"}</h3>
                   <label htmlFor="participant-name">Nome</label>
                   <input id="participant-name" value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Ex. Mariana" maxLength={70} required disabled={busy} />
+                  <label htmlFor="participant-nickname">Nick no Discord (opcional)</label>
+                  <input id="participant-nickname" value={draft.nickname ?? ""} onChange={(event) => setDraft((current) => ({ ...current, nickname: event.target.value }))} maxLength={70} autoCapitalize="none" spellCheck={false} disabled={busy} />
                   <label htmlFor="participant-photo">Foto</label>
                   <div className={styles.photoUpload}>
                     {draft.photo && <img className={styles.avatar} src={draft.photo} alt="Prévia da foto" width={44} height={44} />}

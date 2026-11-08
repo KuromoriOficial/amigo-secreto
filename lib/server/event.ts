@@ -12,11 +12,15 @@ declare global {
 }
 
 const demoCode = "482731";
-const profiles = [
-  { name: "Luiza Martins", photo: "/demo/luiza.svg" },
-  { name: "Rafael Costa", photo: "/demo/rafael.svg" },
-  { name: "Beatriz Almeida", photo: "/demo/beatriz.svg" },
+const demoProfiles: Profile[] = [
+  { name: "Luiza Martins", nickname: "Lu", photo: "/demo/luiza.svg" },
+  { name: "Rafael Costa", nickname: "Rafa", photo: "/demo/rafael.svg" },
+  { name: "Beatriz Almeida", nickname: "Bia", photo: "/demo/beatriz.svg" },
   { name: "Pedro Lima", photo: "/demo/pedro.svg" },
+];
+const memeProfiles: Profile[] = [
+  { name: "Steve do Minecraft", photo: "/memes/steve.jpg" },
+  { name: "Gato do Overwatch", photo: "/memes/gato.jpg" },
 ];
 
 const dates = Array.from({ length: 61 }, (_, offset) =>
@@ -25,7 +29,12 @@ const dates = Array.from({ length: 61 }, (_, offset) =>
 const eventDates = new Set(dates);
 
 type Mode = "demo" | "live";
-type Profile = { name: string; photo: string };
+type Profile = { name: string; nickname?: string; photo: string };
+
+function publicProfile({ name, nickname, photo }: Profile): Profile {
+  return { name, nickname, photo };
+}
+
 async function eventForParticipants(): Promise<StoredEvent | null> {
   return hasGitStorage() ? readEvent() : null;
 }
@@ -68,7 +77,8 @@ export async function reveal(input: unknown) {
 
     if (voter && recipient) {
       return {
-        person: { name: recipient.name, photo: recipient.photo },
+        person: publicProfile(recipient),
+        candidates: event.participants.map(publicProfile),
         canSave: true,
         days: voter.unavailableDays ?? [],
         mode,
@@ -78,7 +88,8 @@ export async function reveal(input: unknown) {
 
   const demoMatch = mode === "demo" && code === demoCode;
   return {
-    person: demoMatch ? profiles[0] : profiles[randomIndex(profiles.length)],
+    person: demoMatch ? demoProfiles[0] : memeProfiles[randomIndex(memeProfiles.length)],
+    candidates: demoMatch ? demoProfiles : [],
     canSave: demoMatch,
     days: [],
     mode,
@@ -166,7 +177,7 @@ function summarizeEvent(event: StoredEvent) {
   const unavailableCounts = new Map<string, number>();
   let responseCount = 0;
 
-  const participants = event.participants.map(({ id, name, photo, code, unavailableDays }) => {
+  const participants = event.participants.map(({ id, name, nickname, photo, code, unavailableDays }) => {
     if (unavailableDays !== null) {
       responseCount += 1;
       for (const day of unavailableDays) {
@@ -174,7 +185,7 @@ function summarizeEvent(event: StoredEvent) {
       }
     }
 
-    return { id, name, photo, code, responded: unavailableDays !== null };
+    return { id, name, nickname, photo, code, responded: unavailableDays !== null };
   });
 
   return {
@@ -213,10 +224,15 @@ function validateRoster(input: unknown): Profile[] {
     if (!name || name.length > 70 || /[\x00-\x1f\x7f]/.test(name)) {
       throw new ApiError(400, "Cada participante precisa de um nome com até 70 caracteres.");
     }
+    const nickname = typeof profile?.nickname === "string" ? profile.nickname.trim() : undefined;
+    if ((profile?.nickname !== undefined && nickname === undefined) ||
+      (nickname && ([...nickname].length > 70 || /[\x00-\x1f\x7f]/.test(nickname)))) {
+      throw new ApiError(400, `Use até 70 caracteres no apelido de ${name}.`);
+    }
     if (!validPhoto(profile?.photo)) {
       throw new ApiError(400, `Adicione uma foto JPG, PNG ou WebP válida para ${name}.`);
     }
-    return { name, photo: profile.photo };
+    return { name, nickname: nickname || undefined, photo: profile.photo };
   });
 }
 
