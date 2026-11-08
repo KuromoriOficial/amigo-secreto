@@ -1,27 +1,25 @@
 # Amigo Secreto 2026
 
-Site independente para revelar o sorteio e reunir as indisponibilidades do grupo entre 1º de novembro e 31 de dezembro de 2026.
+O participante usa o [GitHub Pages](https://kuromorioficial.github.io/amigo-secreto/). O painel fica em [/organizar/](https://kuromorioficial.github.io/amigo-secreto/organizar/). A API usa um endereço gerenciado e guarda os dados do evento em `amigo-secreto-2026.json` no [repositório privado de dados](https://github.com/KuromoriOficial/amigo-secreto-dados). O Git registra cada atualização do arquivo no histórico.
 
-## Organizar o encontro
+## Ativar o sorteio real
 
-1. Abra `/organizar` no site publicado com a conta proprietária do Site.
-2. Cadastre pelo menos dois participantes com nome e foto. Salve a lista para continuar mais tarde ou clique em **Realizar sorteio** quando estiver pronta.
-3. Copie o código de cada participante e envie individualmente, junto com o link do site. Cada código revela a mesma pessoa e permite rever ou alterar a disponibilidade.
-4. Acompanhe no painel quantas pessoas responderam e quais datas têm mais pessoas livres. Quem ainda não respondeu fica como pendente. Uma resposta sem datas marcadas indica disponibilidade em todos os dias.
+1. No GitHub, [crie um token de acesso refinado](https://github.com/settings/personal-access-tokens/new) limitado ao repositório `amigo-secreto-dados`. Em permissões de repositório, conceda **Contents: Read and write**. Escolha uma validade que cubra a coleta das respostas.
+2. No Windows, na pasta deste projeto, rode `powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\configurar-segredos.ps1`. Informe o token e crie a chave do organizador nos campos protegidos. Depois avise no chat que concluiu. O assistente pode usar o arquivo protegido do Windows para configurar os segredos do ambiente gerenciado.
+3. Depois da ativação, entre no painel com a chave que você criou. Cadastre os nomes e fotos e clique em **Fazer sorteio**. Envie a cada participante o link público e o código individual dele.
+4. Acompanhe no painel quem respondeu e quantas pessoas podem participar em cada data. Uma resposta sem datas marcadas indica disponibilidade em todos os dias.
 
-Antes do sorteio real, o código `482731` abre a demonstração. Outros números exibem um perfil fictício aleatório. Só os códigos válidos do sorteio real registram respostas no banco.
+Enquanto a configuração está pendente, o código `482731` abre a demonstração. A demonstração salva datas apenas no navegador. Números incorretos mostram um perfil fictício aleatório e não registram respostas.
 
-O Site usa as configurações de acesso do Sites. Para acesso privado, conceda permissão aos convidados no painel de compartilhamento do Site antes de distribuir o link.
+## Build e configuração
 
-## Rodar localmente
-
-Com Node.js 22.13 ou superior, entre na pasta deste projeto e rode:
+O workflow do repositório público publica `dist-pages/`. Para compilar localmente com Node.js 22.13 ou superior:
 
 ```powershell
-npm run install:ci
-npm run build
-node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_needy_wallop.sql
-npm run dev
+npm ci
+$env:PAGES_BASE_PATH = '/amigo-secreto/'
+$env:VITE_API_ORIGIN = 'https://amigo-secreto-encontro-2026.andretoshiro.chatgpt.site'
+npm run build:pages
 ```
 
-Use a URL impressa pelo servidor. Execute a migração uma vez por banco local. Para testar `/organizar`, crie um arquivo `.dev.vars` na pasta do projeto com `ORGANIZER_KEY` e um valor escolhido por você (pelo menos 12 caracteres). A configuração de produção usa `ORGANIZER_EMAIL` no ambiente do Sites para autorizar a conta do organizador. O banco de desenvolvimento é separado do banco de produção.
+A API usa `PAGES_URL` para redirecionar ao GitHub Pages e aceitar requisições do navegador dessa origem. No ambiente da API, configure também `GITHUB_DATA_REPOSITORY`, `GITHUB_DATA_TOKEN` e `ORGANIZER_KEY`. O token e a chave são segredos do ambiente da API. O valor opcional `GITHUB_DATA_BRANCH` aponta para um branch inicializado, com padrão `main`. A API verifica se o repositório é privado antes de acessar os dados.

@@ -1,6 +1,7 @@
 "use client";
 
 import { type ChangeEvent, type FormEvent, useEffect, useState } from "react";
+import { apiUrl, isStaticFrontend, pageUrl } from "../../lib/frontend-paths";
 import styles from "./organizar.module.css";
 
 type Participant = { id: string; name: string; photo: string; code?: string; responded: boolean };
@@ -10,6 +11,7 @@ type PhotoDraft = { id?: string; name: string; photo: string };
 type IconName = "gift" | "arrow" | "lock" | "calendar" | "copy" | "people" | "check";
 
 const emptyDraft: PhotoDraft = { name: "", photo: "" };
+const participantPage = pageUrl("/");
 const months = { "11": "Novembro", "12": "Dezembro" };
 const dateFormatter = new Intl.DateTimeFormat("pt-BR", { day: "numeric", month: "short", weekday: "short", timeZone: "UTC" });
 const saoPauloDate = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "America/Sao_Paulo" });
@@ -28,11 +30,12 @@ function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
 }
 
 async function organizerRequest(key: string, action?: "save" | "draw", participants: Participant[] = [], signal?: AbortSignal) {
-  const response = await fetch("/api/organizer", {
+  const response = await fetch(apiUrl("/api/organizer"), {
     method: action ? "POST" : "GET",
     headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), ...(action ? { "Content-Type": "application/json" } : {}) },
     body: action ? JSON.stringify({ action, participants: participants.map(({ name, photo }) => ({ name, photo })) }) : undefined,
     cache: "no-store",
+    credentials: isStaticFrontend ? "omit" : "same-origin",
     signal,
   });
   const data = await response.json().catch(() => null) as Event | { error: string } | null;
@@ -74,7 +77,7 @@ function todayInSaoPaulo() {
 
 export default function OrganizerPage() {
   const [key, setKey] = useState("");
-  const [checking, setChecking] = useState(true);
+  const [checking, setChecking] = useState(!isStaticFrontend);
   const [event, setEvent] = useState<Event | null>(null);
   const [roster, setRoster] = useState<Participant[]>([]);
   const [draft, setDraft] = useState<PhotoDraft>(emptyDraft);
@@ -89,6 +92,7 @@ export default function OrganizerPage() {
   const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
+    if (isStaticFrontend) return;
     const controller = new AbortController();
     organizerRequest("", undefined, [], controller.signal).then((initialEvent) => {
       setEvent(initialEvent);
@@ -208,7 +212,7 @@ export default function OrganizerPage() {
   return (
     <div className={styles.shell}>
       <header className={styles.topbar}>
-        <a className={styles.brand} href="/">
+        <a className={styles.brand} href={participantPage}>
           <span className={styles.brandIcon}><Icon name="gift" /></span>
           <span>Amigo Secreto <small>2026</small></span>
         </a>
@@ -217,7 +221,7 @@ export default function OrganizerPage() {
 
       {!event ? (
         <main className={styles.gate}>
-          <a className={styles.back} href="/"><Icon name="arrow" size={16} /> Voltar à página do participante</a>
+          <a className={styles.back} href={participantPage}><Icon name="arrow" size={16} /> Voltar à página do participante</a>
           <div className={styles.gateCard}>
             <div className={styles.gateIcon}><Icon name="lock" size={25} /></div>
             <p className={styles.eyebrow}>Área restrita</p>
@@ -227,12 +231,12 @@ export default function OrganizerPage() {
               <p className={styles.calendarHint} role="status">Verificando acesso…</p>
             ) : (
               <>
-                <a className={styles.signIn} href="/signin-with-chatgpt?return_to=%2Forganizar" target="_top">Entrar com ChatGPT</a>
+                {!isStaticFrontend && <a className={styles.signIn} href="/signin-with-chatgpt?return_to=%2Forganizar" target="_top">Entrar com ChatGPT</a>}
                 <form className={styles.form} onSubmit={enter}>
                   <label htmlFor="organizer-key">Chave do organizador</label>
                   <input id="organizer-key" type="password" autoComplete="current-password" value={key} onChange={(event) => setKey(event.target.value)} required />
                   {error && <p className={styles.error} role="alert">{error}</p>}
-                  <button type="submit" className={styles.secondary} disabled={busy}>{busy ? "Abrindo…" : "Acessar com chave"}</button>
+                  <button type="submit" className={isStaticFrontend ? styles.primary : styles.secondary} disabled={busy}>{busy ? "Abrindo…" : "Acessar com chave"}</button>
                 </form>
               </>
             )}
@@ -240,7 +244,7 @@ export default function OrganizerPage() {
         </main>
       ) : (
         <main className={styles.dashboard}>
-          <a className={styles.back} href="/"><Icon name="arrow" size={16} /> Página do participante</a>
+          <a className={styles.back} href={participantPage}><Icon name="arrow" size={16} /> Página do participante</a>
           <div className={styles.hero}>
             <div>
               <p className={styles.eyebrow}>Amigo secreto · Novembro e dezembro de 2026</p>
@@ -309,8 +313,8 @@ export default function OrganizerPage() {
 
               {drawn ? (
                 <div className={styles.share}>
-                  <button type="button" className={styles.secondary} onClick={() => copy(new URL("/", window.location.href).href, "Link do participante copiado.")}><Icon name="copy" size={16} /> Copiar link do participante</button>
-                  <a href="/">Abrir página do participante</a>
+                  <button type="button" className={styles.secondary} onClick={() => copy(new URL(participantPage, window.location.origin).href, "Link do participante copiado.")}><Icon name="copy" size={16} /> Copiar link do participante</button>
+                  <a href={participantPage}>Abrir página do participante</a>
                 </div>
               ) : (
                 <form className={styles.participantForm} onSubmit={saveParticipant}>

@@ -2,6 +2,7 @@
 
 import { ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Gift, KeyRound, LockKeyhole, Sparkles } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
+import { apiUrl, assetUrl, pageUrl } from "../lib/frontend-paths";
 
 const YEAR = 2026;
 const MONTHS = [
@@ -18,7 +19,7 @@ type Profile = { name: string; photo: string };
 type RevealResult = { person: Profile; canSave: boolean; days: string[]; mode: Mode };
 
 async function post<T>(endpoint: string, payload: object): Promise<T> {
-  const response = await fetch(endpoint, {
+  const response = await fetch(apiUrl(endpoint), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -44,11 +45,12 @@ function demoDays(): string[] {
 function ProfilePhoto({ person }: { person: Profile }) {
   const [failed, setFailed] = useState(false);
   const initials = person.name.trim().split(/\s+/).slice(0, 2).map((word) => Array.from(word)[0]).join("");
+  const photo = person.photo.startsWith("/api/") ? apiUrl(person.photo) : assetUrl(person.photo);
 
   return (
     <div className="as-photo">
       <span aria-hidden="true">{initials}</span>
-      {person.photo && !failed && <img src={person.photo} alt={`Foto de ${person.name}`} onError={() => setFailed(true)} />}
+      {photo && !failed && <img src={photo} alt={`Foto de ${person.name}`} onError={() => setFailed(true)} />}
     </div>
   );
 }
@@ -68,7 +70,7 @@ export default function Home() {
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch("/api/event", { signal: controller.signal, cache: "no-store" })
+    fetch(apiUrl("/api/event"), { signal: controller.signal, cache: "no-store" })
       .then((response) => response.ok ? response.json() as Promise<{ mode?: Mode }> : null)
       .then((event) => {
         if (!controller.signal.aborted && (event?.mode === "demo" || event?.mode === "live")) setMode(event.mode);
@@ -145,11 +147,11 @@ export default function Home() {
   return (
     <div className="as-site">
       <header className="as-shell as-header">
-        <a className="as-brand" href="/" aria-label="Amigo Secreto, página inicial">
+        <a className="as-brand" href={pageUrl("/")} aria-label="Amigo Secreto, página inicial">
           <span className="as-brand-icon"><Gift size={23} strokeWidth={1.7} aria-hidden="true" /></span>
           <span>Amigo Secreto<small>EDIÇÃO {YEAR}</small></span>
         </a>
-        <a className="as-organizer" href="/organizar">
+        <a className="as-organizer" href={pageUrl("/organizar")}>
           <KeyRound size={16} strokeWidth={1.75} aria-hidden="true" />
           <span><span className="as-organizer-prefix">Área do </span>organizador</span>
           <ArrowUpRight className="as-organizer-arrow" size={14} aria-hidden="true" />
@@ -163,7 +165,7 @@ export default function Home() {
             <h1 id="as-title">O segredo<br /><em>começa aqui.</em></h1>
             <p className="as-hero-description">Descubra quem você tirou e ajude a encontrar uma data em que todo mundo possa participar.</p>
           </div>
-          <img className="as-gifts" src="/presentes.svg" alt="" aria-hidden="true" width={520} height={365} />
+          <img className="as-gifts" src={assetUrl("/presentes.svg")} alt="" aria-hidden="true" width={520} height={365} />
         </section>
 
         <div className="as-workflow">

@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { hasGitStorage, readEvent, updateEvent, type StoredEvent } from "./git-store";
 import { ApiError } from "./http";
 
 declare global {
@@ -25,16 +26,8 @@ const eventDates = new Set(dates);
 
 type Mode = "demo" | "live";
 type Profile = { name: string; photo: string };
-type SavedParticipant = Profile & { id: string; code: string | null; unavailable_days: string | null };
-
-function requireDatabase() {
-  if (!env.DB) throw new ApiError(503, "O banco de dados do evento ainda não foi configurado.");
-  return env.DB;
-}
-
-async function eventMode(): Promise<Mode> {
-  const state = await env.DB?.prepare("SELECT drawn FROM event WHERE id = 1").first<number>("drawn");
-  return state === 1 ? "live" : "demo";
+async function eventForParticipants(): Promise<StoredEvent | null> {
+  return hasGitStorage() ? readEvent() : null;
 }
 
 function randomIndex(size: number) {
@@ -59,31 +52,25 @@ function unavailableDays(input: unknown) {
   return [...new Set<string>(input)].sort();
 }
 
-function savedDays(value: string | null): string[] {
-  return value === null ? [] : JSON.parse(value);
-}
-
 export async function publicEvent() {
-  return { mode: await eventMode() };
+  const event = await eventForParticipants();
+  return { mode: event?.drawn ? "live" : "demo" };
 }
 
 export async function reveal(input: unknown) {
   const code = numericCode(input);
-  const mode = await eventMode();
+  const event = await eventForParticipants();
+  const mode: Mode = event?.drawn ? "live" : "demo";
 
-  if (mode === "live" && code.length === 12) {
-    const match = await requireDatabase().prepare(`
-      SELECT friend.name, friend.photo, voter.unavailable_days
-      FROM participant AS voter
-      JOIN participant AS friend ON friend.id = voter.recipient_id
-      WHERE voter.code = ?
-    `).bind(code).first<Profile & { unavailable_days: string | null }>();
+  if (event?.drawn && code.length === 12) {
+    const voter = event.participants.find((person) => person.code === code);
+    const recipient = event.participants.find((person) => person.id === voter?.recipientId);
 
-    if (match) {
+    if (voter && recipient) {
       return {
-        person: { name: match.name, photo: match.photo },
+        person: { name: recipient.name, photo: recipient.photo },
         canSave: true,
-        days: savedDays(match.unavailable_days),
+        days: voter.unavailableDays ?? [],
         mode,
       };
     }
@@ -103,13 +90,16 @@ export async function saveAvailability(codeInput: unknown, daysInput: unknown) {
   const days = unavailableDays(daysInput);
   if (code.length !== 12) throw new ApiError(403, "Use o código do sorteio para registrar suas datas.");
 
-  const result = await requireDatabase().prepare(`
-    UPDATE participant SET unavailable_days = ? WHERE code = ?
-  `).bind(JSON.stringify(days), code).run();
-
-  if (result.meta.changes !== 1) {
-    throw new ApiError(403, "Use o código do sorteio para registrar suas datas.");
-  }
+  await updateEvent((current) => {
+    const participant = current.drawn && current.participants.find((person) => person.code === code);
+    if (!participant) throw new ApiError(403, "Use o código do sorteio para registrar suas datas.");
+    if (JSON.stringify(participant.unavailableDays) === JSON.stringify(days)) return current;
+    return {
+      ...current,
+      participants: current.participants.map((person) =>
+        person.id === participant.id ? { ...person, unavailableDays: days } : person),
+    };
+  });
 
   return { ok: true };
 }
@@ -121,6 +111,11 @@ export async function requireOrganizer(request: Request) {
   if (key && authorization.startsWith("Bearer ") && authorization.length <= 1024) {
     if (await matchesKey(authorization.slice(7), key)) return;
     throw new ApiError(401, "A chave de organização está incorreta.");
+  }
+
+  if (env.PAGES_URL) {
+    if (!key) throw new ApiError(503, "A organização ainda precisa configurar a chave do painel.");
+    throw new ApiError(401, "Informe a chave de organização.");
   }
 
   const userId = request.headers.get("oai-authenticated-user-id");
@@ -163,28 +158,23 @@ async function matchesKey(provided: string, key: string) {
 }
 
 export async function organizerState() {
-  const db = requireDatabase();
-  const [state, roster] = await db.batch([
-    db.prepare("SELECT drawn FROM event WHERE id = 1"),
-    db.prepare("SELECT id, name, photo, code, unavailable_days FROM participant ORDER BY position"),
-  ]);
+  return summarizeEvent(await readEvent());
+}
 
-  const event = state.results[0] as { drawn: number } | undefined;
-  const phase = event?.drawn === 1 ? "drawn" : "draft";
-  const rows = roster.results as SavedParticipant[];
+function summarizeEvent(event: StoredEvent) {
+  const phase = event.drawn ? "drawn" : "draft";
   const unavailableCounts = new Map<string, number>();
   let responseCount = 0;
 
-  const participants = rows.map((row) => {
-    const responded = row.unavailable_days !== null;
-    if (responded) {
+  const participants = event.participants.map(({ id, name, photo, code, unavailableDays }) => {
+    if (unavailableDays !== null) {
       responseCount += 1;
-      for (const day of savedDays(row.unavailable_days)) {
+      for (const day of unavailableDays) {
         unavailableCounts.set(day, (unavailableCounts.get(day) ?? 0) + 1);
       }
     }
 
-    return { id: row.id, name: row.name, photo: row.photo, code: row.code ?? undefined, responded };
+    return { id, name, photo, code, responded: unavailableDays !== null };
   });
 
   return {
@@ -254,7 +244,6 @@ function uniqueCodes(size: number) {
 export async function updateRoster(action: unknown, input: unknown) {
   if (action !== "save" && action !== "draw") throw new ApiError(400, "Ação inválida.");
 
-  const db = requireDatabase();
   const roster = validateRoster(input);
   const drawing = action === "draw";
   if (drawing && roster.length < 2) throw new ApiError(400, "Cadastre pelo menos duas pessoas para sortear.");
@@ -262,23 +251,19 @@ export async function updateRoster(action: unknown, input: unknown) {
   const ids = roster.map(() => crypto.randomUUID());
   const recipients = drawing ? assignRecipients(ids) : [];
   const codes = drawing ? uniqueCodes(roster.length) : [];
-  const guard = "(SELECT drawn FROM event WHERE id = 1) = 0";
-
-  // The guarded batch replaces the roster and activates the draw as one transaction.
-  // Concurrent attempts after a successful draw make no changes.
-  const results = await db.batch([
-    db.prepare("INSERT OR IGNORE INTO event (id) VALUES (1)"),
-    db.prepare(`DELETE FROM participant WHERE ${guard}`),
-    ...roster.map((person, index) => db.prepare(`
-      INSERT INTO participant (id, name, photo, position, code, recipient_id)
-      SELECT ?, ?, ?, ?, ?, ? WHERE ${guard}
-    `).bind(ids[index], person.name, person.photo, index, codes[index] ?? null, recipients[index] ?? null)),
-    db.prepare("UPDATE event SET drawn = ? WHERE id = 1 AND drawn = 0").bind(drawing ? 1 : 0),
-  ]);
-
-  if (results.at(-1)?.meta.changes !== 1) {
-    throw new ApiError(409, "O sorteio já aconteceu e a lista foi encerrada.");
-  }
-
-  return organizerState();
+  const event = await updateEvent((current) => {
+    if (current.drawn) throw new ApiError(409, "O sorteio já aconteceu e a lista foi encerrada.");
+    return {
+      version: 1,
+      drawn: drawing,
+      participants: roster.map((person, index) => ({
+        ...person,
+        id: ids[index],
+        code: codes[index],
+        recipientId: recipients[index],
+        unavailableDays: null,
+      })),
+    };
+  });
+  return summarizeEvent(event);
 }
