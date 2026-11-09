@@ -1,4 +1,4 @@
-import { auditPairs, editParticipant, generateAccessCodes, importOfflineDraw, organizerState, registerDrawCodes, requireOrganizer, updateRoster } from "@/lib/server/event";
+import { auditPairs, cancelDraw, editParticipant, generateAccessCodes, importOfflineDraw, organizerState, registerDrawCodes, requireOrganizer, resetDraw, updateRoster } from "@/lib/server/event";
 import { endpoint, readBody } from "@/lib/server/http";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +15,9 @@ export function POST(request: Request) {
     await requireOrganizer(request);
     const body = await readBody(request, 3_300_000);
     switch (body.action) {
-      case "import": return importOfflineDraw(body.draw, body.drawCodes);
+      case "import": return importOfflineDraw(body.draw, body.drawCodes, body.kind);
+      case "cancel-draw": return cancelDraw();
+      case "reset-draw": return resetDraw();
       case "register-codes": return registerDrawCodes(body.drawCodes);
       case "credentials": return generateAccessCodes();
       case "edit-profile": return editParticipant(body);

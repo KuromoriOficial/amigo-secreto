@@ -2,6 +2,7 @@
 
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from "react";
 import { apiUrl, assetUrl, isStaticFrontend, pageUrl } from "../../lib/frontend-paths";
+import { createOfflineDraw, type OfflineDraw } from "../../lib/offline-crypto";
 import { isSteamFriendCode, type SteamGame } from "../../lib/steam-games";
 import { SteamPicker } from "./steam-picker";
 import styles from "./organizar.module.css";
@@ -17,16 +18,19 @@ type Participant = Profile & {
 };
 type ProfileTracking = { accessCode?: string; accessed?: boolean; revealed?: boolean };
 type Day = { date: string; available: number; unavailable: number };
-type Event = { phase: "draft" | "drawn"; drawMethod?: "offline" | "online"; participants: Participant[]; responseCount: number; dates: Day[] };
+type DrawKind = "test" | "definitive";
+type DrawStatus = "draft" | DrawKind | "cancelled";
+type Event = { phase: "draft" | "drawn"; drawStatus?: DrawStatus; drawMethod?: "offline" | "online"; participants: Participant[]; responseCount: number; dates: Day[] };
 type PhotoDraft = Profile & ProfileTracking & { id?: string };
-type OfflineAssignment = { participantId: string; lookup: string; iv: string; ciphertext: string };
-type OfflineDraw = { version: 1; assignments: OfflineAssignment[] };
 type OrganizerAction =
   | { action: "save"; participants: (Profile & { id?: string })[] }
   | { action: "credentials" }
   | { action: "edit-profile"; participantId: string } & Profile & ProfileTracking
-  | { action: "import"; draw: OfflineDraw; drawCodes: string[] }
-  | { action: "register-codes"; drawCodes: string[] };
+  | { action: "import"; draw: OfflineDraw; drawCodes: string[]; kind: DrawKind }
+  | { action: "register-codes"; drawCodes: string[] }
+  | { action: "cancel-draw" }
+  | { action: "reset-draw" };
+type DrawIntent = { action: "generate" | "import"; kind: DrawKind } | { action: "cancel-draw" } | { action: "reset-draw" };
 type AuditAction = { action: "audit"; confirmation: "REVELAR" };
 type AuditPerson = { id: string; name: string; nickname?: string };
 type AuditPair = { giver: AuditPerson; recipient: AuditPerson };
@@ -42,8 +46,38 @@ const updateMessages: Record<OrganizerAction["action"], string> = {
   save: "Lista salva.",
   credentials: "Códigos de acesso gerados.",
   "edit-profile": "Perfil atualizado.",
-  import: "Sorteio ativado. Envie os dois códigos de cada pessoa em particular.",
+  import: "Sorteio definitivo ativado. Envie os dois códigos de cada pessoa em particular.",
   "register-codes": "Códigos de sorteio registrados.",
+  "cancel-draw": "Sorteio cancelado. Volte à preparação quando estiver pronto para começar de novo.",
+  "reset-draw": "Painel voltou à preparação. Perfis e códigos de acesso foram mantidos.",
+};
+const phaseLabels: Record<DrawStatus, string> = {
+  draft: "Em preparação",
+  test: "Sorteio de teste ativo",
+  definitive: "Sorteio definitivo ativo",
+  cancelled: "Sorteio cancelado",
+};
+const drawConfirmations = {
+  test: {
+    title: "Ativar um sorteio de teste?",
+    detail: "Os códigos de teste funcionarão até você resetar o sorteio. O reset apaga os resultados, as revelações e as respostas do calendário deste teste.",
+    button: "Confirmar sorteio de teste",
+  },
+  definitive: {
+    title: "Ativar o sorteio definitivo?",
+    detail: "Os participantes poderão consultar os resultados com seus códigos. Para fazer outro sorteio, primeiro cancele este e volte à preparação.",
+    button: "Confirmar sorteio definitivo",
+  },
+  "cancel-draw": {
+    title: "Cancelar o sorteio definitivo?",
+    detail: "Os códigos deste sorteio deixarão de funcionar. O painel ficará cancelado até você voltar à preparação.",
+    button: "Confirmar cancelamento",
+  },
+  "reset-draw": {
+    title: "Resetar o sorteio e voltar à preparação?",
+    detail: "Os códigos de sorteio, os registros de revelação e as respostas do calendário serão apagados. Os perfis e os códigos de acesso serão mantidos.",
+    button: "Confirmar reset do sorteio",
+  },
 };
 
 function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
@@ -138,7 +172,7 @@ function CopyCode({ label, name, value, copy }: { label: string; name: string; v
 }
 
 function downloadRoster(participants: Participant[]) {
-  const roster = participants.map(({ id, name, nickname }) => ({ id, name, nickname }));
+  const roster = participants.map(({ id, name, nickname }) => ({ id, name, nickname: nickname || undefined }));
   const url = URL.createObjectURL(new Blob([JSON.stringify({ version: 1, participants: roster }, null, 2)], { type: "application/json" }));
   const link = document.createElement("a");
   link.href = url;
@@ -195,6 +229,7 @@ export default function OrganizerPage() {
   const [pendingCodes, setPendingCodes] = useState<{ filename: string; data: string[] } | null>(null);
   const [readingDraw, setReadingDraw] = useState(false);
   const [drawError, setDrawError] = useState("");
+  const [drawIntent, setDrawIntent] = useState<DrawIntent | null>(null);
   const [auditStep, setAuditStep] = useState<0 | 1 | 2>(0);
   const [auditConfirmation, setAuditConfirmation] = useState("");
   const [auditPairs, setAuditPairs] = useState<AuditPair[] | null>(null);
@@ -203,6 +238,7 @@ export default function OrganizerPage() {
   const [showAll, setShowAll] = useState(false);
   const participantName = useRef<HTMLInputElement>(null);
   const auditInput = useRef<HTMLInputElement>(null);
+  const drawConfirmation = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (isStaticFrontend) return;
@@ -226,6 +262,10 @@ export default function OrganizerPage() {
     if (auditStep === 2) auditInput.current?.focus();
   }, [auditStep]);
 
+  useEffect(() => {
+    if (drawIntent) drawConfirmation.current?.focus();
+  }, [drawIntent]);
+
   function clearPendingDraw() {
     setPendingDraw(null);
     setPendingCodes(null);
@@ -245,6 +285,7 @@ export default function OrganizerPage() {
     setDraft(emptyDraft);
     setChanged(false);
     clearPendingDraw();
+    setDrawIntent(null);
     closeAudit();
   }
 
@@ -263,27 +304,53 @@ export default function OrganizerPage() {
     }
   }
 
-  async function update(action?: OrganizerAction) {
+  async function update(action?: OrganizerAction | (() => Promise<OrganizerAction>)) {
     if (busy) return;
     setBusy(true);
     setError("");
     setMessage("");
     setDrawError("");
+    let payload: OrganizerAction | undefined;
     try {
-      const nextEvent = await organizerRequest(key, action);
-      if (action) applyEvent(nextEvent);
+      payload = typeof action === "function" ? await action() : action;
+      const nextEvent = await organizerRequest(key, payload);
+      if (payload) applyEvent(nextEvent);
       else {
         setEvent(nextEvent);
         setRoster(nextEvent.participants);
       }
-      setMessage(action ? updateMessages[action.action] : "Respostas e acessos atualizados.");
+      setMessage(payload?.action === "import" && payload.kind === "test"
+        ? "Sorteio de teste ativado."
+        : payload ? updateMessages[payload.action] : "Respostas e acessos atualizados.");
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : "Falha ao atualizar o painel.";
-      if (action?.action === "import" || action?.action === "register-codes") setDrawError(detail);
-      else if (action?.action === "edit-profile") setFormError(detail);
+      if (typeof action === "function" || payload?.action === "import" || payload?.action === "register-codes"
+        || payload?.action === "cancel-draw" || payload?.action === "reset-draw") setDrawError(detail);
+      else if (payload?.action === "edit-profile") setFormError(detail);
       else setError(detail);
     } finally {
       setBusy(false);
+    }
+  }
+
+  function reviewDraw(intent: DrawIntent) {
+    setDrawError("");
+    setDrawIntent(intent);
+  }
+
+  function confirmDraw() {
+    if (!drawIntent || !canConfirmDraw) return;
+    if (drawIntent.action === "generate" && savedRoster) {
+      const roster = savedRoster.map(({ id, name, nickname }) => ({ id, name, nickname: nickname || undefined }));
+      const kind = drawIntent.kind;
+      void update(async () => {
+        const { draw, distribution } = await createOfflineDraw(roster);
+        return { action: "import", draw, drawCodes: distribution.map(({ code }) => code), kind };
+      });
+    } else if (drawIntent.action === "import" && pendingDraw && pendingCodes) {
+      void update({ action: "import", draw: pendingDraw.data, drawCodes: pendingCodes.data, kind: drawIntent.kind });
+    } else if (drawIntent.action === "cancel-draw" || drawIntent.action === "reset-draw") {
+      void update(drawIntent);
     }
   }
 
@@ -318,6 +385,7 @@ export default function OrganizerPage() {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = "";
     if (!file || !readyForDraw || !savedRoster) return;
+    setDrawIntent(null);
     setPendingDraw(null);
     setDrawError("");
     if (file.size > 16_384) {
@@ -339,6 +407,7 @@ export default function OrganizerPage() {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = "";
     if (!file || (!readyForDraw && !canRegisterCodes)) return;
+    setDrawIntent(null);
     setPendingCodes(null);
     setDrawError("");
     if (file.size > 16_384) {
@@ -396,7 +465,7 @@ export default function OrganizerPage() {
     setFormError("");
     const profile = { name, nickname: draft.nickname?.trim() ?? "", photo: draft.photo, steamCode, games: draft.games ?? [] };
     const previous = roster.find(({ id }) => id === draft.id);
-    if (drawn) {
+    if (locked) {
       if (!previous) return;
       const accessCode = draft.accessCode ?? "";
       if (accessCode && !/^\d{20}$/.test(accessCode)) {
@@ -444,11 +513,14 @@ export default function OrganizerPage() {
     setFormError("");
     setMessage("");
     clearPendingDraw();
+    setDrawIntent(null);
     closeAudit();
     setChanged(false);
   }
 
-  const drawn = event?.phase === "drawn";
+  const drawStatus = event?.drawStatus ?? (event?.phase === "drawn" ? "definitive" : "draft");
+  const locked = drawStatus !== "draft";
+  const drawn = drawStatus === "test" || drawStatus === "definitive";
   const offline = drawn && event?.drawMethod === "offline";
   const missingAccessCodes = roster.some(({ accessCode }) => !accessCode);
   const missingDrawCodes = offline && roster.some(({ code }) => !code);
@@ -460,12 +532,17 @@ export default function OrganizerPage() {
     .filter((day) => month === "all" || day.date.slice(5, 7) === month)
     .sort((first, second) => Number(first.date < today) - Number(second.date < today) || first.unavailable - second.unavailable || first.date.localeCompare(second.date));
   const draftInProgress = Boolean(draft.id || draft.name || draft.nickname || draft.photo || draft.steamCode || draft.games?.length);
-  const savedRoster = event?.phase === "draft" ? event.participants : null;
+  const savedRoster = event && !locked ? event.participants : null;
   const editing = changed || draftInProgress || photoBusy;
   const canSaveDraft = changed && !draftInProgress && !photoBusy && !busy && !readingDraw;
   const readyForDraw = Boolean(savedRoster && savedRoster.length >= 2 && !editing && !busy && !readingDraw);
   const canRegisterCodes = missingDrawCodes && !editing && !busy && !readingDraw;
-  const canRefresh = Boolean(event && !editing && !busy && !readingDraw && !pendingDraw && !pendingCodes && auditStep === 0 && !auditPairs);
+  const canConfirmDraw = drawIntent?.action === "generate" ? readyForDraw
+    : drawIntent?.action === "import" ? readyForDraw && Boolean(pendingDraw && pendingCodes)
+      : !busy && !editing && !readingDraw && (drawIntent?.action === "cancel-draw"
+        ? drawStatus === "definitive"
+        : drawIntent?.action === "reset-draw" && (drawStatus === "test" || drawStatus === "cancelled"));
+  const canRefresh = Boolean(event && !editing && !busy && !readingDraw && !pendingDraw && !pendingCodes && !drawIntent && auditStep === 0 && !auditPairs);
 
   useEffect(() => {
     if (!canRefresh) return;
@@ -501,6 +578,18 @@ export default function OrganizerPage() {
       pending?.abort();
     };
   }, [canRefresh, key]);
+
+  const confirmation = drawIntent && drawConfirmations["kind" in drawIntent ? drawIntent.kind : drawIntent.action];
+  const confirmationPanel = confirmation && (
+    <div className={styles.warning} ref={drawConfirmation} tabIndex={-1} role="group" aria-labelledby="draw-confirmation-title">
+      <strong id="draw-confirmation-title">{confirmation.title}</strong>
+      <p>{confirmation.detail}</p>
+      <div className={styles.formActions}>
+        <button className={styles.primary} type="button" onClick={confirmDraw} disabled={!canConfirmDraw}>{busy ? "Processando…" : confirmation.button}</button>
+        <button className={styles.textButton} type="button" onClick={() => { setDrawIntent(null); setDrawError(""); }} disabled={busy}>Voltar</button>
+      </div>
+    </div>
+  );
 
   return (
     <div className={styles.shell}>
@@ -542,9 +631,9 @@ export default function OrganizerPage() {
             <div>
               <p className={styles.eyebrow}>Amigo secreto · Novembro e dezembro de 2026</p>
               <h1>Painel da organização</h1>
-              <p>{drawn ? "Compartilhe os códigos, acompanhe os acessos e confira as respostas do grupo." : "Prepare os perfis, gere os acessos e ative o sorteio feito offline."}</p>
+              <p>{drawn ? "Compartilhe os códigos, acompanhe os acessos e confira as respostas do grupo." : locked ? "Gerencie os perfis ou volte à preparação para um novo sorteio." : "Prepare os perfis, gere os acessos e escolha o tipo de sorteio."}</p>
             </div>
-            <span className={styles.phase}>{drawn ? "Sorteio ativo" : "Em preparação"}</span>
+            <span className={`${styles.phase} ${drawStatus === "test" ? styles.phaseTest : drawStatus === "cancelled" ? styles.phaseCancelled : ""}`}>{phaseLabels[drawStatus]}</span>
           </div>
 
           {error && <p className={styles.error} role="alert">{error}</p>}
@@ -570,7 +659,7 @@ export default function OrganizerPage() {
 
               {roster.length > 0 && missingAccessCodes && (
                 <div className={styles.accessTools}>
-                  <button className={styles.secondary} type="button" onClick={() => update({ action: "credentials" })} disabled={editing || busy || readingDraw}>Gerar códigos de acesso faltantes</button>
+                  <button className={styles.secondary} type="button" onClick={() => update({ action: "credentials" })} disabled={editing || busy || readingDraw || Boolean(drawIntent)}>Gerar códigos de acesso faltantes</button>
                   <p className={styles.calendarHint}>{changed ? "Salve a lista para gerar os códigos." : "Os códigos já gerados continuam válidos."}</p>
                 </div>
               )}
@@ -590,7 +679,7 @@ export default function OrganizerPage() {
                         </div>
                         <div className={styles.rowActions}>
                           <button className={styles.textButton} type="button" aria-label={`Editar ${person.name}`} disabled={busy || photoBusy || Boolean(draft.id && draft.id !== person.id)} onClick={() => editParticipant(person)}>Editar</button>
-                          {!drawn && <button className={styles.remove} type="button" aria-label={`Remover ${person.name}`} disabled={busy || photoBusy} onClick={() => {
+                          {!locked && <button className={styles.remove} type="button" aria-label={`Remover ${person.name}`} disabled={busy || photoBusy} onClick={() => {
                             setRoster((current) => current.filter((entry) => entry.id !== person.id));
                             if (draft.id === person.id) setDraft(emptyDraft);
                             setChanged(true);
@@ -598,17 +687,17 @@ export default function OrganizerPage() {
                           }}>Remover</button>}
                         </div>
                       </div>
-                      {(drawn || person.accessCode) && (
+                      {(locked || person.accessCode) && (
                         <div className={styles.credentialGrid}>
                           <CopyCode label="Código de acesso" name={person.name} value={person.accessCode} copy={copy} />
                           {drawn && <CopyCode label="Código do sorteio" name={person.name} value={person.code} copy={copy} />}
                         </div>
                       )}
-                      {(drawn || person.accessCode) && (
+                      {(locked || person.accessCode) && (
                         <div className={styles.badges} aria-label={`Acompanhamento de ${person.name}`}>
                           <TrackingBadge label="Acessou" empty="Acesso pendente" date={person.accessedAt} />
                           <TrackingBadge label="Viu o sorteio" empty="Revelação pendente" date={person.revealedAt} />
-                          {drawn && <span className={`${styles.badge} ${person.responded ? styles.badgeDone : ""}`}>{person.responded ? "Disponibilidade enviada" : "Disponibilidade pendente"}</span>}
+                          {locked && <span className={`${styles.badge} ${person.responded ? styles.badgeDone : ""}`}>{person.responded ? "Disponibilidade enviada" : "Disponibilidade pendente"}</span>}
                         </div>
                       )}
                     </li>
@@ -643,7 +732,7 @@ export default function OrganizerPage() {
                   <a href={participantPage}>Abrir página do participante</a>
                 </div>
               )}
-              {(!drawn || draft.id) && (
+              {(!locked || draft.id) && (
                 <form className={styles.participantForm} onSubmit={saveParticipant}>
                   <h3>{draft.id ? "Editar participante" : "Adicionar participante"}</h3>
                   <label htmlFor="participant-name">Nome</label>
@@ -658,7 +747,7 @@ export default function OrganizerPage() {
                   <label htmlFor="participant-steam-code">Código de amigo da Steam (opcional)</label>
                   <input id="participant-steam-code" value={draft.steamCode ?? ""} onChange={(event) => setDraft((current) => ({ ...current, steamCode: event.target.value.replace(/\D/g, "").slice(0, 10) }))} inputMode="numeric" disabled={busy} />
                   <SteamPicker key={draft.id ?? "new"} games={draft.games ?? []} onChange={(games) => setDraft((current) => ({ ...current, games }))} disabled={busy} />
-                  {drawn && (
+                  {locked && (
                     <fieldset className={styles.trackingEditor} disabled={busy}>
                       <legend>Acesso e revelação</legend>
                       <label htmlFor="participant-access-code">Código de acesso</label>
@@ -669,182 +758,213 @@ export default function OrganizerPage() {
                   )}
                   {formError && <p className={styles.error} role="alert">{formError}</p>}
                   <div className={styles.formActions}>
-                    <button className={styles.primary} type="submit" disabled={busy || photoBusy}>{photoBusy ? "Preparando foto…" : drawn ? "Salvar perfil" : draft.id ? "Aplicar edição" : "Adicionar à lista"}</button>
+                    <button className={styles.primary} type="submit" disabled={busy || photoBusy}>{photoBusy ? "Preparando foto…" : locked ? "Salvar perfil" : draft.id ? "Aplicar edição" : "Adicionar à lista"}</button>
                     {draftInProgress && <button className={styles.textButton} type="button" onClick={() => { setDraft(emptyDraft); setFormError(""); }} disabled={busy || photoBusy}>Cancelar</button>}
                   </div>
                 </form>
               )}
             </section>
 
-            {drawn ? (
+            {locked ? (
               <div className={styles.column}>
-                <section className={styles.card} aria-labelledby="dates-title">
+                <section className={styles.card} aria-labelledby="draw-lifecycle-title">
                   <div className={styles.sectionHeading}>
-                    <span className={styles.sectionIcon}><Icon name="calendar" /></span>
+                    <span className={styles.sectionIcon}><Icon name="gift" /></span>
                     <div>
-                      <h2 id="dates-title">Melhores datas</h2>
-                      <p>{pending ? `${pending} ${pending === 1 ? "pessoa ainda não respondeu" : "pessoas ainda não responderam"}.` : "Todas as pessoas responderam."}</p>
+                      <h2 id="draw-lifecycle-title">{phaseLabels[drawStatus]}</h2>
+                      <p>{drawStatus === "test" ? "Este sorteio serve para testar o fluxo antes do evento definitivo." : drawStatus === "cancelled" ? "Volte à preparação para liberar um novo sorteio." : "Os códigos podem ser distribuídos individualmente aos participantes."}</p>
                     </div>
                   </div>
-                  <div className={styles.calendarActions}>
-                    <label htmlFor="month-filter" className={styles.srOnly}>Filtrar por mês</label>
-                    <select id="month-filter" value={month} onChange={(event) => { setMonth(event.target.value as typeof month); setShowAll(false); }}>
-                      <option value="all">Novembro e dezembro</option>
-                      <option value="11">{months["11"]}</option>
-                      <option value="12">{months["12"]}</option>
-                    </select>
-                    <button type="button" className={styles.secondary} onClick={() => update()} disabled={busy || editing || readingDraw || Boolean(pendingCodes)}>{busy ? "Atualizando…" : "Atualizar painel"}</button>
-                  </div>
-                  <p className={styles.calendarHint}>As próximas datas com menos impedimentos aparecem primeiro.</p>
-                  <div className={styles.tableWrap}>
-                    <table className={styles.dateTable}>
-                      <thead><tr><th scope="col">Dia</th><th scope="col">Livres</th><th scope="col">Impedidos</th><th scope="col">Pendentes</th></tr></thead>
-                      <tbody>
-                        {rankedDates.slice(0, showAll ? rankedDates.length : 8).map((day) => {
-                          const past = day.date < today;
-                          const allFree = !past && pending === 0 && day.unavailable === 0;
-                          return (
-                            <tr key={day.date}>
-                              <th scope="row">
-                                {dateFormatter.format(new Date(`${day.date}T12:00:00Z`))}
-                                {allFree && <small className={styles.free}><Icon name="check" size={12} /> Todos livres</small>}
-                                {past && <small>Data passada</small>}
-                              </th>
-                              <td>{day.available}</td>
-                              <td>{day.unavailable}</td>
-                              <td>{pending}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  {rankedDates.length > 8 && <button type="button" className={styles.textButton} onClick={() => setShowAll((value) => !value)}>{showAll ? "Mostrar menos datas" : `Ver todas as ${rankedDates.length} datas`}</button>}
-                </section>
-                <section className={styles.card} aria-labelledby="audit-title">
-                  <div className={styles.sectionHeading}>
-                    <span className={styles.sectionIcon}><Icon name="lock" /></span>
-                    <div>
-                      <h2 id="audit-title">Consulta reservada</h2>
-                      <p>Abra a lista completa de pares quando precisar conferir o sorteio.</p>
-                    </div>
-                  </div>
-                  {auditError && <p className={styles.error} role="alert">{auditError}</p>}
-                  {auditPairs && (
-                    <>
-                      <ul className={styles.pairs} aria-label="Pares do sorteio">
-                        {auditPairs.map(({ giver, recipient }) => (
-                          <li key={giver.id}>
-                            <span><b>{giver.name}</b>{giver.nickname && <small>{giver.nickname}</small>}</span>
-                            <span className={styles.pairAction}>tirou</span>
-                            <span><b>{recipient.name}</b>{recipient.nickname && <small>{recipient.nickname}</small>}</span>
-                          </li>
-                        ))}
-                      </ul>
-                      <div className={styles.formActions}>
-                        <button className={styles.secondary} type="button" onClick={closeAudit}>Ocultar os pares</button>
-                      </div>
-                    </>
-                  )}
-                  {!auditPairs && auditStep === 0 && (
+                  {drawIntent ? confirmationPanel : (
                     <div className={styles.formActions}>
-                      <button className={styles.secondary} type="button" onClick={() => setAuditStep(1)} disabled={busy || missingDrawCodes}>Ver quem tirou quem</button>
-                      {missingDrawCodes && <p className={styles.calendarHint}>Registre os códigos do sorteio para liberar a consulta.</p>}
+                      {drawStatus === "definitive" ? (
+                        <button className={styles.secondary} type="button" onClick={() => reviewDraw({ action: "cancel-draw" })} disabled={busy || editing || readingDraw}>Cancelar sorteio definitivo</button>
+                      ) : (
+                        <button className={styles.secondary} type="button" onClick={() => reviewDraw({ action: "reset-draw" })} disabled={busy || editing || readingDraw}>Resetar sorteio</button>
+                      )}
                     </div>
                   )}
-                  {auditStep === 1 && (
-                    <div className={styles.warning}>
-                      <strong>Primeiro aviso · Surpresa do grupo</strong>
-                      <p>Ao continuar, você poderá ver todas as combinações, inclusive quem tirou você.</p>
-                      <div className={styles.formActions}>
-                        <button className={styles.secondary} type="button" onClick={() => setAuditStep(2)}>Continuar para confirmação</button>
-                        <button className={styles.textButton} type="button" onClick={closeAudit}>Cancelar</button>
-                      </div>
-                    </div>
-                  )}
-                  {auditStep === 2 && (
-                    <form className={styles.warning} onSubmit={(event) => { event.preventDefault(); void revealAudit(); }}>
-                      <strong>Segundo aviso · Exibição dos nomes</strong>
-                      <p>As combinações ficarão visíveis nesta tela até você ocultá-las. Confirme em um local privado.</p>
-                      <div className={styles.auditField}>
-                        <label htmlFor="audit-confirmation">Digite REVELAR para confirmar</label>
-                        <input id="audit-confirmation" ref={auditInput} value={auditConfirmation} onChange={(event) => setAuditConfirmation(event.target.value)} autoComplete="off" spellCheck={false} disabled={busy} />
-                      </div>
-                      <div className={styles.formActions}>
-                        <button className={styles.primary} type="submit" disabled={busy || auditConfirmation.trim().toUpperCase() !== "REVELAR"}>{busy ? "Revelando…" : "Confirmar e revelar os pares"}</button>
-                        <button className={styles.textButton} type="button" onClick={closeAudit} disabled={busy}>Cancelar</button>
-                      </div>
-                    </form>
-                  )}
+                  {drawIntent && drawError && <p className={styles.error} role="alert">{drawError}</p>}
                 </section>
+                {drawn && (
+                  <>
+                  <section className={styles.card} aria-labelledby="dates-title">
+                    <div className={styles.sectionHeading}>
+                      <span className={styles.sectionIcon}><Icon name="calendar" /></span>
+                      <div>
+                        <h2 id="dates-title">Melhores datas</h2>
+                        <p>{pending ? `${pending} ${pending === 1 ? "pessoa ainda não respondeu" : "pessoas ainda não responderam"}.` : "Todas as pessoas responderam."}</p>
+                      </div>
+                    </div>
+                    <div className={styles.calendarActions}>
+                      <label htmlFor="month-filter" className={styles.srOnly}>Filtrar por mês</label>
+                      <select id="month-filter" value={month} onChange={(event) => { setMonth(event.target.value as typeof month); setShowAll(false); }}>
+                        <option value="all">Novembro e dezembro</option>
+                        <option value="11">{months["11"]}</option>
+                        <option value="12">{months["12"]}</option>
+                      </select>
+                      <button type="button" className={styles.secondary} onClick={() => update()} disabled={busy || editing || readingDraw || Boolean(pendingCodes || drawIntent)}>{busy ? "Atualizando…" : "Atualizar painel"}</button>
+                    </div>
+                    <p className={styles.calendarHint}>As próximas datas com menos impedimentos aparecem primeiro.</p>
+                    <div className={styles.tableWrap}>
+                      <table className={styles.dateTable}>
+                        <thead><tr><th scope="col">Dia</th><th scope="col">Livres</th><th scope="col">Impedidos</th><th scope="col">Pendentes</th></tr></thead>
+                        <tbody>
+                          {rankedDates.slice(0, showAll ? rankedDates.length : 8).map((day) => {
+                            const past = day.date < today;
+                            const allFree = !past && pending === 0 && day.unavailable === 0;
+                            return (
+                              <tr key={day.date}>
+                                <th scope="row">
+                                  {dateFormatter.format(new Date(`${day.date}T12:00:00Z`))}
+                                  {allFree && <small className={styles.free}><Icon name="check" size={12} /> Todos livres</small>}
+                                  {past && <small>Data passada</small>}
+                                </th>
+                                <td>{day.available}</td>
+                                <td>{day.unavailable}</td>
+                                <td>{pending}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    {rankedDates.length > 8 && <button type="button" className={styles.textButton} onClick={() => setShowAll((value) => !value)}>{showAll ? "Mostrar menos datas" : `Ver todas as ${rankedDates.length} datas`}</button>}
+                  </section>
+                  <section className={styles.card} aria-labelledby="audit-title">
+                    <div className={styles.sectionHeading}>
+                      <span className={styles.sectionIcon}><Icon name="lock" /></span>
+                      <div>
+                        <h2 id="audit-title">Consulta reservada</h2>
+                        <p>Abra a lista completa de pares quando precisar conferir o sorteio.</p>
+                      </div>
+                    </div>
+                    {auditError && <p className={styles.error} role="alert">{auditError}</p>}
+                    {auditPairs && (
+                      <>
+                        <ul className={styles.pairs} aria-label="Pares do sorteio">
+                          {auditPairs.map(({ giver, recipient }) => (
+                            <li key={giver.id}>
+                              <span><b>{giver.name}</b>{giver.nickname && <small>{giver.nickname}</small>}</span>
+                              <span className={styles.pairAction}>tirou</span>
+                              <span><b>{recipient.name}</b>{recipient.nickname && <small>{recipient.nickname}</small>}</span>
+                            </li>
+                          ))}
+                        </ul>
+                        <div className={styles.formActions}>
+                          <button className={styles.secondary} type="button" onClick={closeAudit}>Ocultar os pares</button>
+                        </div>
+                      </>
+                    )}
+                    {!auditPairs && auditStep === 0 && (
+                      <div className={styles.formActions}>
+                        <button className={styles.secondary} type="button" onClick={() => setAuditStep(1)} disabled={busy || missingDrawCodes}>Ver quem tirou quem</button>
+                        {missingDrawCodes && <p className={styles.calendarHint}>Registre os códigos do sorteio para liberar a consulta.</p>}
+                      </div>
+                    )}
+                    {auditStep === 1 && (
+                      <div className={styles.warning}>
+                        <strong>Primeiro aviso · Surpresa do grupo</strong>
+                        <p>Ao continuar, você poderá ver todas as combinações, inclusive quem tirou você.</p>
+                        <div className={styles.formActions}>
+                          <button className={styles.secondary} type="button" onClick={() => setAuditStep(2)}>Continuar para confirmação</button>
+                          <button className={styles.textButton} type="button" onClick={closeAudit}>Cancelar</button>
+                        </div>
+                      </div>
+                    )}
+                    {auditStep === 2 && (
+                      <form className={styles.warning} onSubmit={(event) => { event.preventDefault(); void revealAudit(); }}>
+                        <strong>Segundo aviso · Exibição dos nomes</strong>
+                        <p>As combinações ficarão visíveis nesta tela até você ocultá-las. Confirme em um local privado.</p>
+                        <div className={styles.auditField}>
+                          <label htmlFor="audit-confirmation">Digite REVELAR para confirmar</label>
+                          <input id="audit-confirmation" ref={auditInput} value={auditConfirmation} onChange={(event) => setAuditConfirmation(event.target.value)} autoComplete="off" spellCheck={false} disabled={busy} />
+                        </div>
+                        <div className={styles.formActions}>
+                          <button className={styles.primary} type="submit" disabled={busy || auditConfirmation.trim().toUpperCase() !== "REVELAR"}>{busy ? "Revelando…" : "Confirmar e revelar os pares"}</button>
+                          <button className={styles.textButton} type="button" onClick={closeAudit} disabled={busy}>Cancelar</button>
+                        </div>
+                      </form>
+                    )}
+                  </section>
+                  </>
+                )}
               </div>
             ) : (
               <section className={styles.card} aria-labelledby="draw-title">
                 <div className={styles.sectionHeading}>
                   <span className={styles.sectionIcon}><Icon name="gift" /></span>
                   <div>
-                    <h2 id="draw-title">Sorteio offline</h2>
-                    <p>Gere os códigos no seu dispositivo e envie o resultado protegido para ativar o sorteio.</p>
+                    <h2 id="draw-title">Preparar sorteio</h2>
+                    <p>Salve uma lista com pelo menos duas pessoas para gerar o sorteio neste navegador.</p>
                   </div>
                 </div>
-                <ol className={styles.steps}>
-                  <li>
-                    <span>1</span>
-                    <div>
-                      <strong>Salve e baixe a lista</strong>
-                      <p>Cadastre pelo menos duas pessoas. Se a lista mudar depois de baixar, salve e gere um novo resultado.</p>
-                      <div className={styles.formActions}>
-                        <button className={styles.secondary} type="button" onClick={saveDraft} disabled={!canSaveDraft}>Salvar rascunho</button>
-                        <button className={styles.secondary} type="button" onClick={() => { if (readyForDraw && savedRoster) downloadRoster(savedRoster); }} disabled={!readyForDraw}>Baixar lista salva</button>
-                      </div>
-                      {draftInProgress && <p>Conclua ou cancele a edição do participante antes de continuar.</p>}
-                      {changed && !draftInProgress && <p>Salve o rascunho para baixar a versão atual da lista.</p>}
-                    </div>
-                  </li>
-                  <li>
-                    <span>2</span>
-                    <div>
-                      <strong>Faça o sorteio no seu dispositivo</strong>
-                      <p>Abra a ferramenta baixada, importe a lista salva e baixe os dois arquivos gerados.</p>
-                      <div className={styles.formActions}>
-                        <a className={styles.secondary} href={assetUrl("/sorteio-offline.html")} download="sorteio-offline.html">Baixar ferramenta offline</a>
-                      </div>
-                    </div>
-                  </li>
-                  <li>
-                    <span>3</span>
-                    <div>
-                      <strong>Envie o resultado e os códigos</strong>
-                      <p>Selecione <b>sorteio-criptografado-2026.json</b> e <b>codigos-amigo-secreto-2026.txt</b> para revisar e ativar.</p>
-                      <div className={styles.drawFile}>
-                        <label htmlFor="protected-draw">Arquivo de resultado protegido</label>
-                        <input id="protected-draw" type="file" accept=".json,application/json" onChange={stageDraw} disabled={!readyForDraw} />
-                      </div>
-                      <div className={styles.drawFile}>
-                        <label htmlFor="draw-codes">Arquivo de códigos do sorteio</label>
-                        <input id="draw-codes" type="file" accept=".txt,text/plain" onChange={stageCodes} disabled={!readyForDraw} />
-                      </div>
-                    </div>
-                  </li>
-                </ol>
-                {readingDraw && <p className={styles.calendarHint} role="status">Verificando o arquivo…</p>}
+                <div className={styles.formActions}>
+                  <button className={styles.secondary} type="button" onClick={saveDraft} disabled={!canSaveDraft}>Salvar rascunho</button>
+                  <button className={styles.secondary} type="button" onClick={() => reviewDraw({ action: "generate", kind: "test" })} disabled={!readyForDraw || Boolean(drawIntent)}>Fazer sorteio de teste</button>
+                  <button className={styles.primary} type="button" onClick={() => reviewDraw({ action: "generate", kind: "definitive" })} disabled={!readyForDraw || Boolean(drawIntent)}>Fazer sorteio definitivo</button>
+                </div>
+                {draftInProgress && <p className={styles.calendarHint}>Conclua ou cancele a edição do participante antes de continuar.</p>}
+                {changed && !draftInProgress && <p className={styles.calendarHint}>Salve o rascunho para usar a versão atual da lista.</p>}
+                {drawIntent?.action !== "import" && confirmationPanel}
                 {drawError && <p className={styles.error} role="alert">{drawError}</p>}
-                {(pendingDraw || pendingCodes) && (
-                  <div className={styles.confirm}>
-                    <strong>{pendingDraw && pendingCodes ? "Resultado pronto para ativar" : "Selecione os dois arquivos"}</strong>
-                    <div className={styles.filename} role="status">
-                      {pendingDraw && <p>Resultado · <b>{pendingDraw.filename}</b></p>}
-                      {pendingCodes && <p>Códigos · <b>{pendingCodes.filename}</b></p>}
+                <details className={styles.offlinePanel}>
+                  <summary>Importar sorteio feito na ferramenta offline</summary>
+                  <ol className={styles.steps}>
+                    <li>
+                      <span>1</span>
+                      <div>
+                        <strong>Baixe a lista salva</strong>
+                        <p>Cadastre pelo menos duas pessoas. Se a lista mudar depois de baixar, salve e gere um novo resultado.</p>
+                        <div className={styles.formActions}>
+                          <button className={styles.secondary} type="button" onClick={() => { if (readyForDraw && savedRoster) downloadRoster(savedRoster); }} disabled={!readyForDraw}>Baixar lista salva</button>
+                        </div>
+                      </div>
+                    </li>
+                    <li>
+                      <span>2</span>
+                      <div>
+                        <strong>Faça o sorteio no seu dispositivo</strong>
+                        <p>Abra a ferramenta baixada, importe a lista salva e baixe os dois arquivos gerados.</p>
+                        <div className={styles.formActions}>
+                          <a className={styles.secondary} href={assetUrl("/sorteio-offline.html")} download="sorteio-offline.html">Baixar ferramenta offline</a>
+                        </div>
+                      </div>
+                    </li>
+                    <li>
+                      <span>3</span>
+                      <div>
+                        <strong>Envie o resultado e os códigos</strong>
+                        <p>Selecione <b>sorteio-criptografado-2026.json</b> e <b>codigos-amigo-secreto-2026.txt</b> para revisar e ativar.</p>
+                        <div className={styles.drawFile}>
+                          <label htmlFor="protected-draw">Arquivo de resultado protegido</label>
+                          <input id="protected-draw" type="file" accept=".json,application/json" onChange={stageDraw} disabled={!readyForDraw} />
+                        </div>
+                        <div className={styles.drawFile}>
+                          <label htmlFor="draw-codes">Arquivo de códigos do sorteio</label>
+                          <input id="draw-codes" type="file" accept=".txt,text/plain" onChange={stageCodes} disabled={!readyForDraw} />
+                        </div>
+                      </div>
+                    </li>
+                  </ol>
+                  {readingDraw && <p className={styles.calendarHint} role="status">Verificando o arquivo…</p>}
+                  {(pendingDraw || pendingCodes) && (
+                    <div className={styles.confirm}>
+                      <strong>{pendingDraw && pendingCodes ? "Resultado pronto para ativar" : "Selecione os dois arquivos"}</strong>
+                      <div className={styles.filename} role="status">
+                        {pendingDraw && <p>Resultado · <b>{pendingDraw.filename}</b></p>}
+                        {pendingCodes && <p>Códigos · <b>{pendingCodes.filename}</b></p>}
+                      </div>
+                      <p>Escolha se os arquivos devem ativar um sorteio de teste ou o definitivo.</p>
+                      <div className={styles.formActions}>
+                        <button className={styles.secondary} type="button" onClick={() => reviewDraw({ action: "import", kind: "test" })} disabled={!readyForDraw || !pendingDraw || !pendingCodes || Boolean(drawIntent)}>Importar como teste</button>
+                        <button className={styles.primary} type="button" onClick={() => reviewDraw({ action: "import", kind: "definitive" })} disabled={!readyForDraw || !pendingDraw || !pendingCodes || Boolean(drawIntent)}>Importar como definitivo</button>
+                        <button className={styles.textButton} type="button" onClick={() => { clearPendingDraw(); setDrawIntent(null); }} disabled={busy || readingDraw}>Limpar seleção</button>
+                      </div>
                     </div>
-                    <p>Ao ativar, a lista de {roster.length} pessoas será fechada e os códigos ficarão disponíveis no painel.</p>
-                    <div className={styles.formActions}>
-                      <button className={styles.primary} type="button" onClick={() => {
-                        if (readyForDraw && pendingDraw && pendingCodes) update({ action: "import", draw: pendingDraw.data, drawCodes: pendingCodes.data });
-                      }} disabled={!readyForDraw || !pendingDraw || !pendingCodes}>{busy ? "Ativando…" : "Ativar sorteio"}</button>
-                      <button className={styles.textButton} type="button" onClick={clearPendingDraw} disabled={busy || readingDraw}>Limpar seleção</button>
-                    </div>
-                  </div>
-                )}
+                  )}
+                  {drawIntent?.action === "import" && confirmationPanel}
+                </details>
               </section>
             )}
           </div>

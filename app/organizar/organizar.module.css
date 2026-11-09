@@ -279,6 +279,18 @@
   font-weight: 800;
 }
 
+.phaseTest {
+  color: #4c3218;
+  background: #f7d99d;
+  border-color: #f7d99d;
+}
+
+.phaseCancelled {
+  color: #581e1a;
+  background: #f6d8cd;
+  border-color: #f6d8cd;
+}
+
 .stats {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -649,6 +661,23 @@
 .drawFile label {
   font-size: 0.78rem;
   font-weight: 800;
+}
+
+.offlinePanel {
+  border: 1px solid var(--organizer-line);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.offlinePanel summary {
+  color: var(--organizer-green);
+  font-size: 0.83rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.offlinePanel > :not(summary) {
+  margin-top: 12px;
 }
 
 .confirm {

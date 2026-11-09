@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Download, Gift, KeyRound, LockKeyhole, LogOut, Sparkles, UserRound, Volume2, VolumeX } from "lucide-react";
+import { ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Download, FlaskConical, Gift, KeyRound, LockKeyhole, LogOut, Sparkles, UserRound, Volume2, VolumeX } from "lucide-react";
 import { type CSSProperties, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { apiUrl, assetUrl, pageUrl } from "../lib/frontend-paths";
 import type { SteamGame } from "../lib/steam-games";
@@ -33,10 +33,13 @@ const CONFETTI = [
 ] as const;
 
 type Mode = "demo" | "live";
+type DrawStatus = "draft" | "test" | "definitive" | "cancelled";
+type Round = { drawStatus?: DrawStatus; drawId?: string };
+type PublicEvent = Round & { mode: Mode };
 type Profile = { name: string; nickname?: string; photo: string };
-type ParticipantResponse = { participant: Participant; mode: Mode; revealed: boolean; profileComplete: boolean };
+type ParticipantResponse = PublicEvent & { participant: Participant; revealed: boolean; profileComplete: boolean };
 type ParticipantSession = ParticipantResponse & { accessCode: string };
-type RevealResult = { person: Profile & { games?: SteamGame[] }; candidates?: Profile[]; steamFriends?: SteamFriend[]; canSave: boolean; days: string[]; mode: Mode };
+type RevealResult = PublicEvent & { person: Profile & { games?: SteamGame[] }; candidates?: Profile[]; steamFriends?: SteamFriend[]; canSave: boolean; days: string[] };
 type RevealAttempt = RevealResult & { code: string; accessCode: string };
 type RevealReel = { attempt: RevealAttempt; frames: Profile[] };
 type SavedCalendar = { days: readonly string[]; download: "ready" | "loading" | "failed" };
@@ -89,6 +92,24 @@ async function post<T>(endpoint: string, payload: object, signal?: AbortSignal):
     throw new Error(typeof data?.error === "string" ? data.error : "Não foi possível concluir. Tente de novo em instantes.");
   }
   return data;
+}
+
+async function readPublicEvent(signal: AbortSignal): Promise<PublicEvent | null> {
+  try {
+    const response = await fetch(apiUrl("/api/event"), { signal, cache: "no-store" });
+    const event = response.ok ? await response.json() as PublicEvent : null;
+    return event?.mode === "demo" || event?.mode === "live" ? event : null;
+  } catch {
+    return null;
+  }
+}
+
+function roundChanged(attempt: RevealAttempt, event: PublicEvent) {
+  if (attempt.mode === "demo") return event.mode !== "demo";
+  if (!event.drawStatus) return false;
+  return (event.drawStatus !== "test" && event.drawStatus !== "definitive") ||
+    (attempt.drawStatus !== undefined && event.drawStatus !== attempt.drawStatus) ||
+    (attempt.drawId !== undefined && event.drawId !== attempt.drawId);
 }
 
 function demoDays(): string[] {
@@ -225,6 +246,8 @@ function RevealConfetti() {
 
 export default function Home() {
   const [mode, setMode] = useState<Mode>();
+  const [drawStatus, setDrawStatus] = useState<DrawStatus>();
+  const [roundNotice, setRoundNotice] = useState("");
   const [accessInput, setAccessInput] = useState("");
   const [account, setAccount] = useState<ParticipantSession | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
@@ -251,6 +274,9 @@ export default function Home() {
   const saveRequest = useRef<AbortController | null>(null);
   const downloadRequest = useRef<AbortController | null>(null);
   const revealAudio = useRef<RevealAudio | null>(null);
+  const roundRevision = useRef(0);
+  const checkOpenRound = useRef<(() => void) | null>(null);
+  const openAttempt = useRef<RevealAttempt | null>(null);
 
   const stopRevealAudio = useCallback(() => {
     const audio = revealAudio.current;
@@ -258,14 +284,21 @@ export default function Home() {
     if (audio && audio.context.state !== "closed") void audio.context.close().catch(() => {});
   }, []);
 
+  const rememberDrawStatus = useCallback((status?: DrawStatus) => {
+    if (status) {
+      roundRevision.current += 1;
+      setDrawStatus(status);
+    }
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
-    fetch(apiUrl("/api/event"), { signal: controller.signal, cache: "no-store" })
-      .then((response) => response.ok ? response.json() as Promise<{ mode?: Mode }> : null)
-      .then((event) => {
-        if (!controller.signal.aborted && (event?.mode === "demo" || event?.mode === "live")) setMode(event.mode);
-      })
-      .catch(() => {});
+    const revision = roundRevision.current;
+    void readPublicEvent(controller.signal).then((event) => {
+      if (!event || controller.signal.aborted || revision !== roundRevision.current) return;
+      setMode(event.mode);
+      rememberDrawStatus(event.drawStatus);
+    });
     window.addEventListener("pagehide", stopRevealAudio);
     return () => {
       controller.abort();
@@ -277,10 +310,10 @@ export default function Home() {
       window.removeEventListener("pagehide", stopRevealAudio);
       stopRevealAudio();
     };
-  }, [stopRevealAudio]);
+  }, [rememberDrawStatus, stopRevealAudio]);
 
   const registerSeen = useCallback(async (attempt: RevealAttempt) => {
-    if (!attempt.canSave || seenRequest.current) return;
+    if (!attempt.canSave || openAttempt.current !== attempt || seenRequest.current) return;
     const request = new AbortController();
     seenRequest.current = request;
     setSeenError("");
@@ -308,7 +341,67 @@ export default function Home() {
     setSavedCalendar(null);
   }, []);
 
+  const resetReveal = useCallback(() => {
+    openAttempt.current = null;
+    stopRevealAudio();
+    seenRequest.current?.abort();
+    seenRequest.current = null;
+    saveRequest.current?.abort();
+    saveRequest.current = null;
+    setSaving(false);
+    setSeenError("");
+    setRevealed(null);
+    setReel(null);
+    setCode("");
+    setRevealError("");
+    setSelected([]);
+    clearSavedCalendar();
+    setSaveError("");
+    setRoundNotice("");
+    setMonth(0);
+    requestAnimationFrame(() => codeInput.current?.focus());
+  }, [clearSavedCalendar, stopRevealAudio]);
+
+  const clearChangedRound = useCallback((event: PublicEvent) => {
+    const attempt = openAttempt.current;
+    if (!attempt?.canSave || !roundChanged(attempt, event)) return;
+    resetReveal();
+    if (event.drawStatus !== "cancelled") setRoundNotice("O sorteio mudou. Confira o código da rodada com o organizador.");
+  }, [resetReveal]);
+
+  const activeAttempt = revealed?.canSave ? revealed : reel?.attempt;
+  useEffect(() => {
+    const attempt = activeAttempt;
+    if (!attempt) return;
+    const controller = new AbortController();
+    let checking = false;
+
+    function check() {
+      if (checking || document.hidden) return;
+      checking = true;
+      const revision = roundRevision.current;
+      void readPublicEvent(controller.signal).then((event) => {
+        checking = false;
+        if (!event || controller.signal.aborted || revision !== roundRevision.current || openAttempt.current !== attempt) return;
+        setMode(event.mode);
+        rememberDrawStatus(event.drawStatus);
+        clearChangedRound(event);
+      });
+    }
+
+    checkOpenRound.current = check;
+    const interval = window.setInterval(check, 25_000);
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      controller.abort();
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", check);
+      checkOpenRound.current = null;
+    };
+  }, [activeAttempt, clearChangedRound, rememberDrawStatus]);
+
   const completeReveal = useCallback((attempt: RevealAttempt) => {
+    if (openAttempt.current !== attempt) return;
     if (attempt.canSave) playBells(revealAudio.current, RESULT_NOTES, .33);
     else stopRevealAudio();
     setSelected(attempt.mode === "demo" && attempt.canSave && attempt.code === DEMO_CODE ? demoDays() : attempt.days);
@@ -328,6 +421,7 @@ export default function Home() {
     try {
       const result = await post<ParticipantResponse>("/api/participant", { action: "login", accessCode: accessInput }, request.signal);
       if (request.signal.aborted) return;
+      rememberDrawStatus(result.drawStatus);
       setAccount({ ...result, accessCode: accessInput });
       setAccessInput("");
       requestAnimationFrame(() => document.getElementById(result.profileComplete ? "as-reveal-heading" : "as-profile-heading")?.focus());
@@ -344,6 +438,8 @@ export default function Home() {
     const { accessCode } = account;
     const result = await post<ParticipantResponse>("/api/participant", { action: "profile", accessCode, ...profile }, signal);
     if (signal.aborted) return;
+    rememberDrawStatus(result.drawStatus);
+    clearChangedRound(result);
     setAccount((current) => current?.accessCode === accessCode ? { ...result, accessCode, revealed: current.revealed || result.revealed } : current);
     setEditingProfile(false);
     requestAnimationFrame(() => document.getElementById("as-reveal-heading")?.focus());
@@ -351,10 +447,11 @@ export default function Home() {
 
   async function reveal(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!account?.profileComplete || revealRequest.current) return;
+    if (!account?.profileComplete || drawStatus === "cancelled" || revealRequest.current) return;
     const request = new AbortController();
     revealRequest.current = request;
     setRevealError("");
+    setRoundNotice("");
     setLoadingReveal(true);
 
     if (soundOn) {
@@ -370,7 +467,9 @@ export default function Home() {
     try {
       const result = await post<RevealResult>("/api/reveal", { accessCode: account.accessCode, code }, request.signal);
       if (request.signal.aborted) return;
+      rememberDrawStatus(result.drawStatus);
       const attempt = { ...result, code, accessCode: account.accessCode };
+      openAttempt.current = attempt;
       const frames = result.canSave && !window.matchMedia(REDUCED_MOTION).matches ? rouletteFrames(result) : [];
 
       if (frames.length) {
@@ -386,6 +485,12 @@ export default function Home() {
       if (!request.signal.aborted) {
         stopRevealAudio();
         setRevealError(error instanceof Error ? error.message : "Não conseguimos abrir a revelação. Tente novamente.");
+        const revision = roundRevision.current;
+        const event = await readPublicEvent(request.signal);
+        if (event && !request.signal.aborted && revision === roundRevision.current) {
+          setMode(event.mode);
+          rememberDrawStatus(event.drawStatus);
+        }
       }
     } finally {
       if (!request.signal.aborted) setLoadingReveal(false);
@@ -393,29 +498,10 @@ export default function Home() {
     }
   }
 
-  function resetReveal() {
-    stopRevealAudio();
-    seenRequest.current?.abort();
-    seenRequest.current = null;
-    setSeenError("");
-    setRevealed(null);
-    setCode("");
-    setRevealError("");
-    setSelected([]);
-    clearSavedCalendar();
-    setSaveError("");
-    setMonth(0);
-    requestAnimationFrame(() => codeInput.current?.focus());
-  }
-
   function signOut() {
     revealRequest.current?.abort();
     revealRequest.current = null;
-    saveRequest.current?.abort();
-    saveRequest.current = null;
     setLoadingReveal(false);
-    setSaving(false);
-    setReel(null);
     setAccount(null);
     setAccessInput("");
     setEditingProfile(false);
@@ -436,7 +522,7 @@ export default function Home() {
 
   async function saveAvailability(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!revealed?.canSave || saveRequest.current) return;
+    if (!revealed?.canSave || drawStatus === "cancelled" || saveRequest.current) return;
     const request = new AbortController();
     saveRequest.current = request;
     setSaving(true);
@@ -456,6 +542,7 @@ export default function Home() {
         setSaveError(revealed.mode === "demo"
           ? "Este navegador não permitiu salvar a demonstração."
           : error instanceof Error ? error.message : "Não conseguimos salvar. Tente novamente.");
+        checkOpenRound.current?.();
       }
     } finally {
       if (saveRequest.current === request) saveRequest.current = null;
@@ -499,9 +586,10 @@ export default function Home() {
   const { index, name } = MONTHS[month];
   const firstWeekday = new Date(YEAR, index, 1).getDay();
   const dayCount = new Date(YEAR, index + 1, 0).getDate();
-  const calendarEditable = revealed?.canSave === true;
+  const calendarEditable = revealed?.canSave === true && drawStatus !== "cancelled";
   const showProfile = account && (!account.profileComplete || editingProfile);
   const startHeading = !account ? "as-access-heading" : showProfile ? "as-profile-heading" : "as-reveal-heading";
+  const testResult = revealed?.drawStatus === "test" || (revealed?.drawStatus === undefined && drawStatus === "test");
 
   return (
     <div className="as-site">
@@ -526,6 +614,19 @@ export default function Home() {
           </div>
           <img className="as-gifts" src={assetUrl("/presentes.svg")} alt="" aria-hidden="true" width={520} height={365} />
         </section>
+
+        {drawStatus === "test" && (
+          <div className="as-round-banner as-round-test" role="status">
+            <FlaskConical size={20} aria-hidden="true" />
+            <div><strong>Sorteio de teste</strong><p>Os resultados desta rodada servem para conferir o fluxo. O organizador vai liberar o sorteio definitivo separadamente.</p></div>
+          </div>
+        )}
+        {drawStatus === "cancelled" && (
+          <div className="as-round-banner as-round-cancelled" role="status">
+            <LockKeyhole size={20} aria-hidden="true" />
+            <div><strong>Sorteio cancelado</strong><p>Aguarde as instruções do organizador para a próxima rodada.</p></div>
+          </div>
+        )}
 
         <section className="as-guide" aria-labelledby="as-guide-heading">
           <div className="as-guide-header">
@@ -592,7 +693,6 @@ export default function Home() {
               <ParticipantProfile
                 key={account.participant.id}
                 participant={account.participant}
-                profileComplete={account.profileComplete}
                 demo={account.mode === "demo"}
                 onSave={saveProfile}
                 onCancel={account.profileComplete ? () => {
@@ -612,7 +712,8 @@ export default function Home() {
                       </button>
                     </div>
                     <h2 id="as-reveal-heading" tabIndex={-1}>Quem você tirou?</h2>
-                    {revealed ? (
+                    {roundNotice && <p className="as-round-hint" role="status">{roundNotice}</p>}
+                    {drawStatus === "cancelled" ? <p className="as-card-description">A revelação está suspensa até a próxima rodada.</p> : revealed ? (
                       <div className="as-reveal-result">
                         <div
                           className={revealed.canSave ? "as-person as-person-found" : "as-person as-person-incorrect"}
@@ -624,14 +725,14 @@ export default function Home() {
                           {revealed.canSave && <RevealConfetti />}
                           {revealed.canSave && <ProfilePhoto person={revealed.person} />}
                           <div>
-                            <p id="as-result-label">{revealed.canSave && <Sparkles size={14} aria-hidden="true" />}{revealed.canSave ? "Seu amigo secreto é" : "Código incorreto"}</p>
+                            <p id="as-result-label">{revealed.canSave && <Sparkles size={14} aria-hidden="true" />}{revealed.canSave ? (testResult ? "Resultado do sorteio de teste" : "Seu amigo secreto é") : "Código incorreto"}</p>
                             <h3 id="as-result-name">{revealed.person.name}</h3>
                             {revealed.person.nickname && <span className="as-person-nickname">“{revealed.person.nickname}”</span>}
                           </div>
                           {!revealed.canSave && <MemeFigure person={revealed.person} />}
                         </div>
                         <p className="as-reveal-hint">{revealed.canSave
-                          ? "Guarde o segredo e marque no calendário os dias em que você não pode participar."
+                          ? (testResult ? "Este é um resultado de teste. Aguarde o sorteio definitivo do organizador." : "Guarde o segredo e marque no calendário os dias em que você não pode participar.")
                           : "Confira o código recebido do organizador e tente de novo."}</p>
                         {revealed.canSave && (
                           <section className="as-recipient-games" aria-labelledby="as-recipient-games-heading">
@@ -648,7 +749,7 @@ export default function Home() {
                       <Roulette reel={reel} onFinish={completeReveal} />
                     ) : (
                       <>
-                        <p className="as-card-description">Digite seu código do sorteio para revelar a pessoa que você tirou.</p>
+                        <p className="as-card-description">{drawStatus === "test" ? "Digite o código desta rodada para abrir a revelação de teste." : "Digite seu código do sorteio para revelar a pessoa que você tirou."}</p>
                         <form className="as-reveal-form" onSubmit={reveal}>
                           <label htmlFor="as-code">Seu código do sorteio</label>
                           <div className="as-input-frame">
@@ -727,7 +828,7 @@ export default function Home() {
                           </div>
                           {savedCalendar && (
                             <div className="as-calendar-receipt">
-                              <p className="as-success" role="status"><Check size={17} aria-hidden="true" /> {revealed.mode === "demo" ? "Demonstração salva neste navegador." : "Suas datas foram salvas."}</p>
+                              <p className="as-success" role="status"><Check size={17} aria-hidden="true" /> {revealed.mode === "demo" ? "Demonstração salva neste navegador." : testResult ? "Suas datas de teste foram salvas." : "Suas datas foram salvas."}</p>
                               <button className="as-pdf-button" type="button" disabled={savedCalendar.download === "loading"} onClick={downloadCalendar}>
                                 <Download size={16} aria-hidden="true" /> {savedCalendar.download === "loading" ? "Gerando PDF…" : "Baixar calendário em PDF"}
                               </button>
@@ -742,7 +843,7 @@ export default function Home() {
                     </form>
                   </section>
                 </div>
-                {revealed?.canSave && <SteamDirectory friends={revealed.steamFriends ?? []} />}
+                {calendarEditable && <SteamDirectory friends={revealed.steamFriends ?? []} test={testResult} />}
               </>
             )}
           </>

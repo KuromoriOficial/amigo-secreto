@@ -29,13 +29,16 @@ export type StoredParticipant = {
   revealedAt?: string;
   steamCode?: string;
   games?: SteamGame[];
-  photoAccepted?: boolean;
   unavailableDays: string[] | null;
 };
+
+export type DrawStatus = "draft" | "test" | "definitive" | "cancelled";
 
 export type StoredEvent = {
   version: 1;
   drawn: boolean;
+  drawStatus?: Exclude<DrawStatus, "draft">;
+  drawId?: string;
   participants: StoredParticipant[];
 };
 
@@ -163,9 +166,16 @@ function isParticipant(value: unknown): value is StoredParticipant {
     (value.revealedAt === undefined || typeof value.revealedAt === "string") &&
     (value.steamCode === undefined || isSteamFriendCode(value.steamCode)) &&
     (value.games === undefined || parseSteamGames(value.games) !== null) &&
-    (value.photoAccepted === undefined || typeof value.photoAccepted === "boolean") &&
     (value.unavailableDays === null || (Array.isArray(value.unavailableDays) &&
       value.unavailableDays.every((day) => typeof day === "string")));
+}
+
+function isStoredDrawStatus(status: unknown, drawn: boolean): status is StoredEvent["drawStatus"] {
+  return status === undefined || (drawn ? status === "test" || status === "definitive" : status === "cancelled");
+}
+
+function isDrawId(value: unknown): value is string | undefined {
+  return value === undefined || (typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value));
 }
 
 function parseEvent(encoded: string): StoredEvent {
@@ -177,10 +187,11 @@ function parseEvent(encoded: string): StoredEvent {
   }
 
   if (!isRecord(value) || value.version !== 1 || typeof value.drawn !== "boolean" ||
+    !isStoredDrawStatus(value.drawStatus, value.drawn) || !isDrawId(value.drawId) ||
     !Array.isArray(value.participants) || !value.participants.every(isParticipant)) {
     throw invalidData();
   }
-  return { version: 1, drawn: value.drawn, participants: value.participants };
+  return { version: 1, drawn: value.drawn, drawStatus: value.drawStatus, drawId: value.drawId, participants: value.participants };
 }
 
 async function readSnapshot(config: Configuration): Promise<Snapshot> {

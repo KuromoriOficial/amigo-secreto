@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
-import { OFFLINE_CODE_LENGTH, deriveOfflineLookup, openOfflineRecipient, type SealedAssignment } from "../offline-crypto";
+import { OFFLINE_CODE_LENGTH, deriveOfflineLookup, offlineParticipantIdentity, openOfflineRecipient, type SealedAssignment } from "../offline-crypto";
 import { steamGameCover, type SteamGame } from "../steam-games";
-import { hasGitStorage, isSealedAssignment, readEvent, updateEvent, type StoredEvent, type StoredParticipant } from "./git-store";
+import { hasGitStorage, isSealedAssignment, readEvent, updateEvent, type DrawStatus, type StoredEvent, type StoredParticipant } from "./git-store";
 import { ApiError } from "./http";
 import { completeProfile, parseName, parseNickname, parsePhoto, updateProfile, type ProfileFields } from "./profile";
 import { ACCESS_CODE_LENGTH, deriveAccessLookup, openVaultCode, sealVaultCode } from "./vault";
@@ -58,6 +58,19 @@ async function eventForParticipants(): Promise<StoredEvent | null> {
   return hasGitStorage() ? readEvent() : null;
 }
 
+function statusOf(event: StoredEvent | null): DrawStatus {
+  return event?.drawStatus ?? (event?.drawn ? "definitive" : "draft");
+}
+
+function roundFields(event: StoredEvent | null) {
+  return { drawStatus: statusOf(event), drawId: event?.drawn ? event.drawId ?? "legacy" : undefined };
+}
+
+function requireActiveDraw(event: StoredEvent | null): asserts event is StoredEvent {
+  if (statusOf(event) === "cancelled") throw new ApiError(409, "O sorteio foi cancelado pela organização.");
+  if (!event?.drawn) throw new ApiError(409, "O sorteio ainda não foi ativado pela organização.");
+}
+
 function randomIndex(size: number) {
   const sample = new Uint32Array(1);
   const limit = Math.floor(2 ** 32 / size) * size;
@@ -95,7 +108,7 @@ function isAccountCode(code: string) {
 }
 
 function isDemoAccess(event: StoredEvent | null, code: string) {
-  return !event?.drawn && code === demoCode;
+  return statusOf(event) === "draft" && code === demoCode;
 }
 
 function authorizedParticipant(event: StoredEvent | null, lookup: string) {
@@ -104,12 +117,13 @@ function authorizedParticipant(event: StoredEvent | null, lookup: string) {
   return participant;
 }
 
-function participantSession(person: StoredParticipant, mode: Mode) {
+function participantSession(person: StoredParticipant, mode: Mode, event: StoredEvent | null) {
   return {
     participant: { ...publicProfile(person), id: person.id, steamCode: person.steamCode, games: person.games ?? [] },
     mode,
+    ...roundFields(event),
     profileComplete: completeProfile(person),
-    revealed: !!person.revealedAt,
+    revealed: !!event?.drawn && !!person.revealedAt,
   };
 }
 
@@ -119,7 +133,7 @@ function replaceParticipant(event: StoredEvent, participant: StoredParticipant) 
 
 function requireCompleteProfile(person: StoredParticipant) {
   if (!completeProfile(person)) {
-    throw new ApiError(409, "Confirme sua foto, informe o código de amigo da Steam e escolha três jogos diferentes.");
+    throw new ApiError(409, "Adicione uma foto, informe o código de amigo da Steam e escolha três jogos diferentes.");
   }
 }
 
@@ -140,45 +154,47 @@ async function matchingRecipient(event: StoredEvent, person: StoredParticipant, 
 
 export async function publicEvent() {
   const event = await eventForParticipants();
-  return { mode: event?.drawn ? "live" : "demo" };
+  const round = roundFields(event);
+  return { mode: round.drawStatus === "draft" ? "demo" : "live", ...round };
 }
 
 export async function loginParticipant(input: unknown) {
   const code = accessCode(input);
   const event = await eventForParticipants();
-  if (isDemoAccess(event, code)) return participantSession(demoParticipant, "demo");
+  if (isDemoAccess(event, code)) return participantSession(demoParticipant, "demo", event);
 
   const lookup = await deriveAccessLookup(code);
   const person = authorizedParticipant(event, lookup);
-  if (person.accessedAt) return participantSession(person, "live");
+  if (person.accessedAt) return participantSession(person, "live", event);
 
   const accessedAt = new Date().toISOString();
   const updated = await updateEvent((current) => {
     const member = authorizedParticipant(current, lookup);
     return member.accessedAt ? current : replaceParticipant(current, { ...member, accessedAt });
   });
-  return participantSession(authorizedParticipant(updated, lookup), "live");
+  return participantSession(authorizedParticipant(updated, lookup), "live", updated);
 }
 
 export async function saveParticipantProfile(input: unknown, fields: ProfileFields) {
   const code = accessCode(input);
   if (code === demoCode) {
-    if (!isDemoAccess(await eventForParticipants(), code)) throw invalidAccess();
-    const updated = updateProfile(demoParticipant, fields, true);
+    const event = await eventForParticipants();
+    if (!isDemoAccess(event, code)) throw invalidAccess();
+    const updated = updateProfile(demoParticipant, fields);
     requireCompleteProfile(updated);
-    return participantSession(updated, "demo");
+    return participantSession(updated, "demo", event);
   }
 
   const lookup = await deriveAccessLookup(code);
   const updated = await updateEvent((current) => {
-    const person = updateProfile(authorizedParticipant(current, lookup), fields, true);
+    const person = updateProfile(authorizedParticipant(current, lookup), fields);
     requireCompleteProfile(person);
     return replaceParticipant(current, person);
   });
-  return participantSession(authorizedParticipant(updated, lookup), "live");
+  return participantSession(authorizedParticipant(updated, lookup), "live", updated);
 }
 
-function incorrectReveal(mode: Mode) {
+function incorrectReveal(mode: Mode, event: StoredEvent | null) {
   return {
     person: { ...memeProfiles[randomIndex(memeProfiles.length)], games: [] },
     candidates: [],
@@ -186,6 +202,7 @@ function incorrectReveal(mode: Mode) {
     canSave: false,
     days: [],
     mode,
+    ...roundFields(event),
   };
 }
 
@@ -194,7 +211,7 @@ export async function reveal(accessInput: unknown, input: unknown) {
   const code = numericCode(input);
   const event = await eventForParticipants();
   if (isDemoAccess(event, access)) {
-    if (code !== demoCode) return incorrectReveal("demo");
+    if (code !== demoCode) return incorrectReveal("demo", event);
     return {
       person: { ...demoProfiles[0], games: demoGames },
       candidates: demoProfiles,
@@ -202,14 +219,15 @@ export async function reveal(accessInput: unknown, input: unknown) {
       canSave: true,
       days: [],
       mode: "demo" as const,
+      ...roundFields(event),
     };
   }
 
   const voter = authorizedParticipant(event, await deriveAccessLookup(access));
-  if (!event?.drawn) throw new ApiError(409, "O sorteio ainda não foi ativado pela organização.");
+  requireActiveDraw(event);
   requireCompleteProfile(voter);
   const recipient = await matchingRecipient(event, voter, code);
-  if (!recipient) return incorrectReveal("live");
+  if (!recipient) return incorrectReveal("live", event);
   return {
     person: { ...publicProfile(recipient), games: recipient.games ?? [] },
     candidates: event.participants.map(publicProfile),
@@ -217,6 +235,7 @@ export async function reveal(accessInput: unknown, input: unknown) {
     canSave: true,
     days: voter.unavailableDays ?? [],
     mode: "live" as const,
+    ...roundFields(event),
   };
 }
 
@@ -237,6 +256,7 @@ async function updateAfterReveal(
   const lookup = await deriveAccessLookup(access);
   await updateEvent(async (current) => {
     const participant = authorizedParticipant(current, lookup);
+    requireActiveDraw(current);
     requireCompleteProfile(participant);
     if (!await matchingRecipient(current, participant, code)) throw wrongDrawCode();
     return replaceParticipant(current, change(participant));
@@ -312,9 +332,10 @@ export async function organizerState() {
 }
 
 async function summarizeEvent(event: StoredEvent) {
-  const phase = event.drawn ? "drawn" : "draft";
+  const drawStatus = statusOf(event);
+  const phase = drawStatus === "draft" ? "draft" : "drawn";
   const offline = event.participants.some((person) => person.sealed !== undefined);
-  const drawMethod = event.drawn ? (offline ? "offline" : "online") : undefined;
+  const drawMethod = phase === "drawn" ? (offline ? "offline" : "online") : undefined;
   const unavailableCounts = new Map<string, number>();
   let responseCount = 0;
 
@@ -331,7 +352,7 @@ async function summarizeEvent(event: StoredEvent) {
       ...publicProfile(person),
       id,
       accessCode: access ? await openVaultCode("access", id, access) : undefined,
-      code: drawCode ? await openVaultCode("draw", id, drawCode) : code,
+      code: event.drawn ? (drawCode ? await openVaultCode("draw", id, drawCode) : code) : undefined,
       accessedAt,
       revealedAt,
       steamCode,
@@ -342,6 +363,7 @@ async function summarizeEvent(event: StoredEvent) {
 
   return {
     phase,
+    drawStatus,
     drawMethod,
     participants,
     responseCount,
@@ -352,13 +374,26 @@ async function summarizeEvent(event: StoredEvent) {
   };
 }
 
+function requireDraft(event: StoredEvent) {
+  const status = statusOf(event);
+  if (status === "cancelled") throw new ApiError(409, "Volte o sorteio cancelado para rascunho para alterar a lista ou importar outro resultado.");
+  if (status !== "draft") throw new ApiError(409, "O sorteio já aconteceu e a lista foi encerrada.");
+}
+
+function requireUniqueIdentities(participants: readonly Pick<StoredParticipant, "name" | "nickname">[]) {
+  const identities = new Set(participants.map(({ name, nickname }) => offlineParticipantIdentity(name, nickname)));
+  if (identities.size !== participants.length) {
+    throw new ApiError(400, "Há participantes com o mesmo nome e apelido. Use apelidos diferentes para distinguir essas pessoas.");
+  }
+}
+
 function validateRoster(input: unknown) {
   if (!Array.isArray(input) || input.length > 32) {
     throw new ApiError(400, "Cadastre no máximo 32 participantes.");
   }
 
   const ids = new Set<string>();
-  return input.map((entry: unknown) => {
+  const roster = input.map((entry: unknown) => {
     const profile = entry as (ProfileFields & { id?: unknown; name?: unknown; nickname?: unknown }) | null;
     const id = profile?.id;
     if (id !== undefined) {
@@ -372,6 +407,8 @@ function validateRoster(input: unknown) {
     const photo = parsePhoto(profile?.photo, name);
     return { id, name, nickname, photo, steamCode: profile?.steamCode, games: profile?.games };
   });
+  requireUniqueIdentities(roster);
+  return roster;
 }
 
 export async function updateRoster(action: unknown, input: unknown) {
@@ -380,13 +417,13 @@ export async function updateRoster(action: unknown, input: unknown) {
 
   const roster = validateRoster(input);
   const event = await updateEvent((current) => {
-    if (current.drawn) throw new ApiError(409, "O sorteio já aconteceu e a lista foi encerrada.");
+    requireDraft(current);
     const saved = new Map(current.participants.map((person) => [person.id, person]));
     const participants = roster.map(({ id, name, nickname, photo, steamCode, games }) => {
       const previous = id === undefined ? undefined : saved.get(id);
       if (id !== undefined && !previous) throw new ApiError(409, "A lista mudou. Atualize o painel antes de salvar.");
       const base = previous ?? { id: crypto.randomUUID(), name, photo, unavailableDays: null };
-      const profile = { ...base, name, nickname, photo, photoAccepted: base.photo === photo ? base.photoAccepted : undefined };
+      const profile = { ...base, name, nickname, photo };
       return updateProfile(profile, { steamCode, games });
     });
     return { version: 1, drawn: false, participants };
@@ -450,6 +487,11 @@ export async function editParticipant(input: Record<string, unknown>) {
     if (!participant) throw new ApiError(404, "Participante não encontrado.");
     const name = input.name === undefined ? participant.name : parseName(input.name);
     const nickname = input.nickname === undefined ? participant.nickname : parseNickname(input.nickname, name);
+    const identity = offlineParticipantIdentity(name, nickname);
+    if (identity !== offlineParticipantIdentity(participant.name, participant.nickname) &&
+      current.participants.some((person) => person.id !== participant.id && offlineParticipantIdentity(person.name, person.nickname) === identity)) {
+      throw new ApiError(400, "Já existe um participante com esse nome e apelido.");
+    }
     const profile = updateProfile({ ...participant, name, nickname }, input);
     return replaceParticipant(current, {
       ...profile,
@@ -524,12 +566,15 @@ async function attachDrawCodes(participants: StoredParticipant[], codes: Map<str
   })));
 }
 
-export async function importOfflineDraw(input: unknown, drawCodes: unknown) {
+export async function importOfflineDraw(input: unknown, drawCodes: unknown, kind: unknown = "definitive") {
+  if (kind !== "test" && kind !== "definitive") throw new ApiError(400, "Escolha um sorteio de teste ou definitivo.");
   const assignments = offlineAssignments(input);
   const codes = await offlineCodes(drawCodes);
+  const drawId = crypto.randomUUID();
   const rosterMismatch = "O arquivo não corresponde à lista salva. Exporte a lista atual e refaça o sorteio offline.";
   const event = await updateEvent(async (current) => {
-    if (current.drawn) throw new ApiError(409, "O sorteio já aconteceu e a lista foi encerrada.");
+    requireDraft(current);
+    requireUniqueIdentities(current.participants);
     if (current.participants.length !== assignments.size) throw new ApiError(409, rosterMismatch);
 
     const participants = current.participants.map((person) => {
@@ -537,7 +582,35 @@ export async function importOfflineDraw(input: unknown, drawCodes: unknown) {
       if (!sealed) throw new ApiError(409, rosterMismatch);
       return { ...person, sealed };
     });
-    return { ...current, drawn: true, participants: await attachDrawCodes(participants, codes) };
+    return { ...current, drawn: true, drawStatus: kind, drawId, participants: await attachDrawCodes(participants, codes) };
+  });
+  return summarizeEvent(event);
+}
+
+export async function cancelDraw() {
+  const event = await updateEvent((current) => {
+    if (statusOf(current) !== "definitive") throw new ApiError(409, "Somente um sorteio definitivo ativo pode ser cancelado.");
+    return { ...current, drawn: false, drawStatus: "cancelled" };
+  });
+  return summarizeEvent(event);
+}
+
+export async function resetDraw() {
+  const event = await updateEvent((current) => {
+    const status = statusOf(current);
+    if (status !== "test" && status !== "cancelled") {
+      throw new ApiError(409, "Somente um sorteio de teste ou cancelado pode voltar para rascunho.");
+    }
+    const participants = current.participants.map((person) => ({
+      ...person,
+      sealed: undefined,
+      code: undefined,
+      recipientId: undefined,
+      drawCode: undefined,
+      revealedAt: undefined,
+      unavailableDays: null,
+    }));
+    return { version: 1, drawn: false, participants };
   });
   return summarizeEvent(event);
 }

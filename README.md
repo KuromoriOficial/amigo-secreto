@@ -7,9 +7,11 @@ O participante usa o [GitHub Pages](https://kuromorioficial.github.io/amigo-secr
 1. No GitHub, [crie um token de acesso refinado](https://github.com/settings/personal-access-tokens/new) limitado ao repositório `amigo-secreto-dados`. Em permissões de repositório, conceda **Contents: Read and write**. Escolha uma validade que cubra a coleta das respostas.
 2. No Windows, na pasta deste projeto, rode `powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\configurar-segredos.ps1`. Informe o token e crie a chave do organizador nos campos protegidos. Depois avise no chat que concluiu. O assistente pode usar o arquivo protegido do Windows para configurar os segredos do ambiente gerenciado.
 3. Depois da ativação, entre no painel com a chave que você criou. Cadastre os nomes e fotos, salve a lista e gere os códigos de acesso.
-4. Baixe o sorteador offline e abra o arquivo HTML no navegador. Selecione a lista e faça o sorteio. A ferramenta garante que cada participante seja tirado uma vez e que ninguém tire o próprio nome.
-5. Importe `sorteio-criptografado-2026.json` e `codigos-amigo-secreto-2026.txt` no painel. Envie individualmente a cada participante o link público, o código de acesso e o código do sorteio.
-6. Cada pessoa entra com o código de acesso, preenche o perfil Steam e usa o código do sorteio para revelar o amigo. Acompanhe no painel quem entrou, viu a revelação e respondeu ao calendário. Uma resposta sem datas marcadas indica disponibilidade em todos os dias.
+4. Use **Fazer sorteio de teste** para ensaiar com a lista salva. Depois, clique em **Resetar sorteio** para apagar os códigos do teste, as revelações e as respostas do calendário. Os perfis, os códigos de acesso e o registro de entrada são preservados.
+5. Com a lista em rascunho, use **Fazer sorteio definitivo**. Se quiser usar o sorteador offline, baixe a lista e importe os dois arquivos que ele gerar. Cada participante é tirado exatamente uma vez, e ninguém tira o próprio nome.
+6. Envie individualmente o link público, o código de acesso e o código do sorteio definitivo. Cada pessoa entra, preenche o perfil Steam e revela o amigo. Uma foto já cadastrada vale para o perfil. Acompanhe quem entrou, viu a revelação e respondeu ao calendário.
+
+**Cancelar sorteio definitivo** interrompe as consultas e respostas da rodada. Depois de cancelar, use **Resetar sorteio** para voltar ao rascunho e preparar uma nova rodada.
 
 Enquanto o sorteio está em rascunho, o código `482731` funciona na entrada e na revelação da demonstração. A demonstração salva datas apenas no navegador. Um código de sorteio incorreto mostra um meme aleatório.
 

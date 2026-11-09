@@ -79,6 +79,11 @@ function validLabel(value: unknown): value is string {
   return typeof value === "string" && !!value.trim() && [...value].length <= 70 && !/[\x00-\x1f\x7f]/.test(value);
 }
 
+export function offlineParticipantIdentity(name: string, nickname = "") {
+  const normalize = (value: string) => value.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase("pt-BR");
+  return JSON.stringify([normalize(name), normalize(nickname)]);
+}
+
 export function parseOfflineRoster(value: unknown): OfflineParticipant[] {
   const roster = value as { version?: unknown; participants?: unknown } | null;
   if (roster?.version !== 1 || !Array.isArray(roster.participants) ||
@@ -97,6 +102,9 @@ export function parseOfflineRoster(value: unknown): OfflineParticipant[] {
 
   if (new Set(participants.map(({ id }) => id.toLowerCase())).size !== participants.length) {
     throw new Error("A lista tem participantes repetidos. Exporte a lista novamente pelo painel.");
+  }
+  if (new Set(participants.map(({ name, nickname }) => offlineParticipantIdentity(name, nickname))).size !== participants.length) {
+    throw new Error("A lista tem pessoas com o mesmo nome e apelido. Corrija a lista no painel antes de sortear.");
   }
   return participants;
 }

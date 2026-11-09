@@ -2,7 +2,7 @@ import { isSteamFriendCode, parseSteamGames } from "../steam-games";
 import type { StoredParticipant } from "./git-store";
 import { ApiError } from "./http";
 
-export type ProfileFields = { photo?: unknown; steamCode?: unknown; games?: unknown; acceptPhoto?: unknown };
+export type ProfileFields = { photo?: unknown; steamCode?: unknown; games?: unknown };
 
 export function parseName(input: unknown) {
   const name = typeof input === "string" ? input.trim() : "";
@@ -53,15 +53,14 @@ function optionalGames(input: unknown) {
   return games;
 }
 
-export function updateProfile(person: StoredParticipant, fields: ProfileFields, participantConfirmed = false): StoredParticipant {
+export function updateProfile(person: StoredParticipant, fields: ProfileFields): StoredParticipant {
   const photo = fields.photo === undefined ? person.photo : parsePhoto(fields.photo, person.name);
   const steamCode = fields.steamCode === undefined ? person.steamCode : optionalSteamCode(fields.steamCode);
   const games = fields.games === undefined ? person.games : optionalGames(fields.games);
-  let photoAccepted = photo === person.photo ? person.photoAccepted : undefined;
-  if (participantConfirmed && (fields.acceptPhoto === true || fields.photo !== undefined)) photoAccepted = true;
-  return { ...person, photo, photoAccepted, steamCode, games };
+  return { ...person, photo, steamCode, games };
 }
 
 export function completeProfile(person: StoredParticipant) {
-  return person.photoAccepted === true && !!person.photo && isSteamFriendCode(person.steamCode) && person.games?.length === 3;
+  return isSteamFriendCode(person.steamCode) && person.games?.length === 3 &&
+    (validPhoto(person.photo) || (person.id === "demo" && person.photo === "/demo/rafael.svg"));
 }

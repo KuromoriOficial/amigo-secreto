@@ -16,12 +16,12 @@ export type Participant = {
 
 export type ParticipantDraft = {
   steamCode: string;
+  photo?: string;
   games: SteamGame[];
-} & ({ acceptPhoto: true; photo?: never } | { photo: string; acceptPhoto?: never });
+};
 
 export type SteamFriend = Pick<Participant, "id" | "name" | "nickname" | "steamCode">;
 
-type PhotoChoice = { existing: true } | { existing: false; photo: string };
 type SearchResult = { query: string; games: SteamGame[]; error?: string };
 
 const DEMO_GAMES: SteamGame[] = [
@@ -78,7 +78,7 @@ export function GameTiles({ games, onRemove }: { games: SteamGame[]; onRemove?: 
   );
 }
 
-export function SteamDirectory({ friends }: { friends: SteamFriend[] }) {
+export function SteamDirectory({ friends, test = false }: { friends: SteamFriend[]; test?: boolean }) {
   const [notice, setNotice] = useState<{ text: string; failed: boolean } | null>(null);
   const members = [...friends].sort((left, right) => left.name.localeCompare(right.name, "pt-BR"));
 
@@ -96,7 +96,7 @@ export function SteamDirectory({ friends }: { friends: SteamFriend[] }) {
     <section className="as-card as-steam-directory" aria-labelledby="as-steam-directory-heading">
       <div className="as-step as-step-green"><span><UsersRound size={15} aria-hidden="true" /></span> O GRUPO NA STEAM</div>
       <h2 id="as-steam-directory-heading">Códigos de amizade</h2>
-      <p className="as-card-description">Adicione todos os participantes na Steam para manter o sorteio em segredo.</p>
+      <p className="as-card-description">{test ? "Confira os códigos de amizade durante o teste." : "Adicione todos os participantes na Steam para manter o sorteio em segredo."}</p>
       {members.length ? (
         <ul className="as-steam-members" role="list">
           {members.map((friend) => (
@@ -122,20 +122,18 @@ export function SteamDirectory({ friends }: { friends: SteamFriend[] }) {
 
 export default function ParticipantProfile({
   participant,
-  profileComplete,
   demo,
   onSave,
   onCancel,
 }: {
   participant: Participant;
-  profileComplete: boolean;
   demo: boolean;
   onSave: (profile: ParticipantDraft, signal: AbortSignal) => Promise<void>;
   onCancel?: () => void;
 }) {
   const [steamCode, setSteamCode] = useState(participant.steamCode ?? "");
   const [games, setGames] = useState(participant.games);
-  const [photoChoice, setPhotoChoice] = useState<PhotoChoice | null>(profileComplete ? { existing: true } : null);
+  const [uploadedPhoto, setUploadedPhoto] = useState("");
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState<SearchResult | null>(null);
   const [searchAttempt, setSearchAttempt] = useState(0);
@@ -146,8 +144,8 @@ export default function ParticipantProfile({
   const saveRequest = useRef<AbortController | null>(null);
   const cleanQuery = query.trim();
   const result = search?.query === cleanQuery ? search : null;
-  const currentPhoto = photoChoice?.existing === false ? photoChoice.photo : participant.photo;
-  const ready = photoChoice !== null && isSteamFriendCode(steamCode) && games.length === 3;
+  const currentPhoto = uploadedPhoto || participant.photo;
+  const ready = Boolean(currentPhoto) && isSteamFriendCode(steamCode) && games.length === 3;
 
   useEffect(() => () => saveRequest.current?.abort(), []);
 
@@ -180,7 +178,7 @@ export default function ParticipantProfile({
     setPhotoError("");
 
     try {
-      setPhotoChoice({ existing: false, photo: await preparePhoto(file) });
+      setUploadedPhoto(await preparePhoto(file));
     } catch (error) {
       setPhotoError(error instanceof Error ? error.message : "Não foi possível abrir a foto.");
     } finally {
@@ -190,15 +188,14 @@ export default function ParticipantProfile({
 
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!ready || !photoChoice || photoBusy || saveRequest.current) return;
+    if (!ready || photoBusy || saveRequest.current) return;
     const request = new AbortController();
     saveRequest.current = request;
     setSaving(true);
     setSaveError("");
 
     try {
-      const draft = { steamCode, games };
-      await onSave(photoChoice.existing ? { ...draft, acceptPhoto: true } : { ...draft, photo: photoChoice.photo }, request.signal);
+      await onSave({ steamCode, games, ...(uploadedPhoto ? { photo: uploadedPhoto } : {}) }, request.signal);
     } catch (error) {
       if (!request.signal.aborted) setSaveError(error instanceof Error ? error.message : "Não foi possível salvar o perfil.");
     } finally {
@@ -210,7 +207,6 @@ export default function ParticipantProfile({
   function useDemoProfile() {
     setSteamCode("123456789");
     setGames(DEMO_GAMES);
-    setPhotoChoice({ existing: true });
     setPhotoError("");
     setSaveError("");
   }
@@ -219,7 +215,7 @@ export default function ParticipantProfile({
     <section className="as-card as-profile-card" aria-labelledby="as-profile-heading">
       <div className="as-step as-step-green"><span>02</span> PERFIL E LISTA DE DESEJOS</div>
       <h2 id="as-profile-heading" tabIndex={-1}>Prepare seu perfil</h2>
-      <p className="as-card-description">Confirme sua foto, informe seu código de amizade da Steam e escolha três jogos que você gostaria de ganhar.</p>
+      <p className="as-card-description">Informe seu código de amizade da Steam, escolha três jogos que gostaria de ganhar e envie uma foto se ainda não tiver uma cadastrada.</p>
       {demo && <button className="as-text-button as-demo-profile" type="button" disabled={saving || photoBusy} onClick={useDemoProfile}>Preencher perfil de exemplo</button>}
 
       <form className="as-profile-form" onSubmit={saveProfile}>
@@ -232,13 +228,13 @@ export default function ParticipantProfile({
                   {currentPhoto ? <img src={photoUrl(currentPhoto)} alt="Prévia da sua foto de perfil" /> : <Camera size={28} aria-hidden="true" />}
                 </span>
                 <div>
-                  {photoChoice ? <p className="as-profile-confirmed"><Check size={15} aria-hidden="true" /> Foto confirmada</p> : <p>Envie sua foto ou confirme a imagem que já está no perfil.</p>}
-                  {participant.photo && (!photoChoice || !photoChoice.existing) && (
-                    <button className="as-text-button" type="button" onClick={() => { setPhotoChoice({ existing: true }); setPhotoError(""); }}>Usar a foto cadastrada</button>
+                  {currentPhoto ? <p className="as-profile-confirmed"><Check size={15} aria-hidden="true" /> {uploadedPhoto ? "Nova foto pronta" : "Foto cadastrada"}</p> : <p>Envie uma foto para continuar.</p>}
+                  {participant.photo && uploadedPhoto && (
+                    <button className="as-text-button" type="button" onClick={() => { setUploadedPhoto(""); setPhotoError(""); }}>Desfazer troca de foto</button>
                   )}
                 </div>
               </div>
-              <label className="as-profile-label" htmlFor="as-photo-file">Enviar outra foto</label>
+              <label className="as-profile-label" htmlFor="as-photo-file">{currentPhoto ? "Trocar foto (opcional)" : "Enviar foto"}</label>
               <input id="as-photo-file" className="as-photo-file" type="file" accept="image/jpeg,image/png,image/webp" onChange={uploadPhoto} />
               {photoBusy && <p role="status">Preparando a foto…</p>}
               {photoError && <p className="as-error" role="alert">{photoError}</p>}
