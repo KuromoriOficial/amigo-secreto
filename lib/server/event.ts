@@ -19,8 +19,11 @@ const demoProfiles: Profile[] = [
   { name: "Pedro Lima", photo: "/demo/pedro.svg" },
 ];
 const memeProfiles: Profile[] = [
-  { name: "Steve do Minecraft", photo: "/memes/steve.jpg" },
-  { name: "Gato do Overwatch", photo: "/memes/gato.jpg" },
+  { name: "Gato do Overwatch", photo: "/memes/gato-overwatch.png" },
+  { name: "Lula e Bolsonaro", photo: "/memes/lula-e-bolsonaro.png" },
+  { name: "Meu Imposto Favorito", photo: "/memes/meu-imposto-favorito.png" },
+  { name: "Vira a bunda", photo: "/memes/vira-a-bunda.png" },
+  { name: "Sage do Valorant", photo: "/memes/sage.png" },
 ];
 
 const dates = Array.from({ length: 61 }, (_, offset) =>

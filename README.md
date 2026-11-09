@@ -9,7 +9,9 @@ O participante usa o [GitHub Pages](https://kuromorioficial.github.io/amigo-secr
 3. Depois da ativação, entre no painel com a chave que você criou. Cadastre os nomes e fotos e clique em **Fazer sorteio**. Envie a cada participante o link público e o código individual dele.
 4. Acompanhe no painel quem respondeu e quantas pessoas podem participar em cada data. Uma resposta sem datas marcadas indica disponibilidade em todos os dias.
 
-Enquanto a configuração está pendente, o código `482731` abre a demonstração. A demonstração salva datas apenas no navegador. Números incorretos mostram um perfil fictício aleatório e não registram respostas.
+Enquanto a configuração está pendente, o código `482731` abre a demonstração. A demonstração salva datas apenas no navegador. Números incorretos mostram um meme aleatório e não registram respostas.
+
+Depois de salvar as datas, **Baixar calendário em PDF** exporta os calendários de novembro e dezembro com as indisponibilidades marcadas.
 
 ## Build e configuração
 

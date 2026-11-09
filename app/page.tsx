@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Gift, KeyRound, LockKeyhole, Sparkles } from "lucide-react";
+import { ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Download, Gift, KeyRound, LockKeyhole, Sparkles } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { apiUrl, assetUrl, pageUrl } from "../lib/frontend-paths";
 
@@ -21,6 +21,7 @@ type Profile = { name: string; nickname?: string; photo: string };
 type RevealResult = { person: Profile; candidates?: Profile[]; canSave: boolean; days: string[]; mode: Mode };
 type RevealAttempt = RevealResult & { code: string };
 type RevealReel = { attempt: RevealAttempt; frames: Profile[] };
+type SavedCalendar = { days: readonly string[]; download: "ready" | "loading" | "failed" };
 
 async function post<T>(endpoint: string, payload: object, signal?: AbortSignal): Promise<T> {
   const response = await fetch(apiUrl(endpoint), {
@@ -61,6 +62,17 @@ function ProfilePhoto({ person }: { person: Profile }) {
       <span aria-hidden="true">{initials}</span>
       {photo && !failed && <img src={photo} alt={`Foto de ${person.name}`} onError={() => setFailed(true)} />}
     </div>
+  );
+}
+
+function MemeFigure({ person }: { person: Profile }) {
+  const [failed, setFailed] = useState(false);
+  if (!person.photo || failed) return null;
+
+  return (
+    <figure className="as-meme">
+      <img src={profilePhotoUrl(person.photo)} alt={`Meme de ${person.name}`} onError={() => setFailed(true)} />
+    </figure>
   );
 }
 
@@ -154,10 +166,11 @@ export default function Home() {
   const [saving, setSaving] = useState(false);
   const [revealError, setRevealError] = useState("");
   const [saveError, setSaveError] = useState("");
-  const [saved, setSaved] = useState(false);
+  const [savedCalendar, setSavedCalendar] = useState<SavedCalendar | null>(null);
   const codeInput = useRef<HTMLInputElement>(null);
   const revealOutput = useRef<HTMLDivElement>(null);
   const revealRequest = useRef<AbortController | null>(null);
+  const downloadRequest = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -170,6 +183,7 @@ export default function Home() {
     return () => {
       controller.abort();
       revealRequest.current?.abort();
+      downloadRequest.current?.abort();
     };
   }, []);
 
@@ -177,13 +191,19 @@ export default function Home() {
     if (revealed) revealOutput.current?.focus({ preventScroll: true });
   }, [revealed]);
 
+  const clearSavedCalendar = useCallback(() => {
+    downloadRequest.current?.abort();
+    downloadRequest.current = null;
+    setSavedCalendar(null);
+  }, []);
+
   const completeReveal = useCallback((attempt: RevealAttempt) => {
     setSelected(attempt.mode === "demo" && attempt.canSave && attempt.code === DEMO_CODE ? demoDays() : attempt.days);
     setRevealed(attempt);
     setReel(null);
-    setSaved(false);
+    clearSavedCalendar();
     setSaveError("");
-  }, []);
+  }, [clearSavedCalendar]);
 
   async function reveal(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -222,7 +242,7 @@ export default function Home() {
     setRevealed(null);
     setCode("");
     setSelected([]);
-    setSaved(false);
+    clearSavedCalendar();
     setSaveError("");
     setMonth(0);
     requestAnimationFrame(() => codeInput.current?.focus());
@@ -230,7 +250,7 @@ export default function Home() {
 
   function toggleDay(date: string) {
     setSelected((previous) => previous.includes(date) ? previous.filter((value) => value !== date) : [...previous, date]);
-    setSaved(false);
+    clearSavedCalendar();
     setSaveError("");
   }
 
@@ -238,7 +258,7 @@ export default function Home() {
     event.preventDefault();
     if (!revealed?.canSave || saving) return;
     setSaving(true);
-    setSaved(false);
+    clearSavedCalendar();
     setSaveError("");
 
     try {
@@ -248,13 +268,46 @@ export default function Home() {
       } else {
         await post<{ ok: true }>("/api/availability", { code: revealed.code, days });
       }
-      setSaved(true);
+      setSavedCalendar({ days, download: "ready" });
     } catch (error) {
       setSaveError(revealed.mode === "demo"
         ? "Este navegador não permitiu salvar a demonstração."
         : error instanceof Error ? error.message : "Não conseguimos salvar. Tente novamente.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function downloadCalendar() {
+    if (!savedCalendar || downloadRequest.current) return;
+    const { days } = savedCalendar;
+    const request = new AbortController();
+    downloadRequest.current = request;
+    setSavedCalendar({ days, download: "loading" });
+
+    try {
+      const { createAvailabilityPdf } = await import("../lib/availability-pdf");
+      if (request.signal.aborted) return;
+      const bytes = await createAvailabilityPdf(days);
+      if (request.signal.aborted) return;
+
+      const link = document.createElement("a");
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      link.href = url;
+      link.download = "disponibilidade-amigo-secreto.pdf";
+      link.hidden = true;
+      try {
+        document.body.appendChild(link);
+        link.click();
+      } finally {
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      }
+      setSavedCalendar({ days, download: "ready" });
+    } catch {
+      if (!request.signal.aborted) setSavedCalendar({ days, download: "failed" });
+    } finally {
+      if (downloadRequest.current === request) downloadRequest.current = null;
     }
   }
 
@@ -300,12 +353,13 @@ export default function Home() {
                   tabIndex={-1}
                   aria-labelledby="as-result-label as-result-name"
                 >
-                  <ProfilePhoto person={revealed.person} />
+                  {revealed.canSave && <ProfilePhoto person={revealed.person} />}
                   <div>
                     <p id="as-result-label">{revealed.canSave ? "Seu amigo secreto é" : "Código incorreto"}</p>
                     <h3 id="as-result-name">{revealed.person.name}</h3>
                     {revealed.person.nickname && <span className="as-person-nickname">“{revealed.person.nickname}”</span>}
                   </div>
+                  {!revealed.canSave && <MemeFigure person={revealed.person} />}
                 </div>
                 <p className="as-reveal-hint">{revealed.canSave
                   ? "Guarde o segredo e marque no calendário os dias em que você não pode participar."
@@ -394,7 +448,15 @@ export default function Home() {
                     <p className="as-day-count"><span aria-hidden="true" />{selected.length === 1 ? "1 dia indisponível" : `${selected.length} dias indisponíveis`}</p>
                     <button className="as-primary as-save-button" type="submit" disabled={saving}><Check size={17} aria-hidden="true" /> {saving ? "Salvando…" : "Salvar minhas datas"}</button>
                   </div>
-                  {saved && <p className="as-success" role="status"><Check size={17} aria-hidden="true" /> {revealed.mode === "demo" ? "Demonstração salva neste navegador." : "Suas datas foram salvas."}</p>}
+                  {savedCalendar && (
+                    <div className="as-calendar-receipt">
+                      <p className="as-success" role="status"><Check size={17} aria-hidden="true" /> {revealed.mode === "demo" ? "Demonstração salva neste navegador." : "Suas datas foram salvas."}</p>
+                      <button className="as-pdf-button" type="button" disabled={savedCalendar.download === "loading"} onClick={downloadCalendar}>
+                        <Download size={16} aria-hidden="true" /> {savedCalendar.download === "loading" ? "Gerando PDF…" : "Baixar calendário em PDF"}
+                      </button>
+                      {savedCalendar.download === "failed" && <p className="as-error" role="alert">Não foi possível gerar o PDF. Tente novamente.</p>}
+                    </div>
+                  )}
                   {saveError && <p className="as-error" role="alert">{saveError}</p>}
                 </>
               ) : (
