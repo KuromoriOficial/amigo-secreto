@@ -1,8 +1,10 @@
 "use client";
 
-import { ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Download, Gift, KeyRound, LockKeyhole, Sparkles, Volume2, VolumeX } from "lucide-react";
+import { ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Download, Gift, KeyRound, LockKeyhole, LogOut, Sparkles, UserRound, Volume2, VolumeX } from "lucide-react";
 import { type CSSProperties, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { apiUrl, assetUrl, pageUrl } from "../lib/frontend-paths";
+import type { SteamGame } from "../lib/steam-games";
+import ParticipantProfile, { GameTiles, SteamDirectory, type Participant, type ParticipantDraft, type SteamFriend } from "./participant-profile";
 
 const YEAR = 2026;
 const MONTHS = [
@@ -32,8 +34,10 @@ const CONFETTI = [
 
 type Mode = "demo" | "live";
 type Profile = { name: string; nickname?: string; photo: string };
-type RevealResult = { person: Profile; candidates?: Profile[]; canSave: boolean; days: string[]; mode: Mode };
-type RevealAttempt = RevealResult & { code: string };
+type ParticipantResponse = { participant: Participant; mode: Mode; revealed: boolean; profileComplete: boolean };
+type ParticipantSession = ParticipantResponse & { accessCode: string };
+type RevealResult = { person: Profile & { games?: SteamGame[] }; candidates?: Profile[]; steamFriends?: SteamFriend[]; canSave: boolean; days: string[]; mode: Mode };
+type RevealAttempt = RevealResult & { code: string; accessCode: string };
 type RevealReel = { attempt: RevealAttempt; frames: Profile[] };
 type SavedCalendar = { days: readonly string[]; download: "ready" | "loading" | "failed" };
 type RevealAudio = { context: AudioContext; bus: GainNode | null };
@@ -221,6 +225,11 @@ function RevealConfetti() {
 
 export default function Home() {
   const [mode, setMode] = useState<Mode>();
+  const [accessInput, setAccessInput] = useState("");
+  const [account, setAccount] = useState<ParticipantSession | null>(null);
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [loginError, setLoginError] = useState("");
+  const [editingProfile, setEditingProfile] = useState(false);
   const [code, setCode] = useState("");
   const [revealed, setRevealed] = useState<RevealAttempt | null>(null);
   const [reel, setReel] = useState<RevealReel | null>(null);
@@ -230,11 +239,16 @@ export default function Home() {
   const [soundOn, setSoundOn] = useState(true);
   const [saving, setSaving] = useState(false);
   const [revealError, setRevealError] = useState("");
+  const [seenError, setSeenError] = useState("");
   const [saveError, setSaveError] = useState("");
   const [savedCalendar, setSavedCalendar] = useState<SavedCalendar | null>(null);
+  const accessField = useRef<HTMLInputElement>(null);
   const codeInput = useRef<HTMLInputElement>(null);
   const revealOutput = useRef<HTMLDivElement>(null);
+  const loginRequest = useRef<AbortController | null>(null);
   const revealRequest = useRef<AbortController | null>(null);
+  const seenRequest = useRef<AbortController | null>(null);
+  const saveRequest = useRef<AbortController | null>(null);
   const downloadRequest = useRef<AbortController | null>(null);
   const revealAudio = useRef<RevealAudio | null>(null);
 
@@ -255,16 +269,38 @@ export default function Home() {
     window.addEventListener("pagehide", stopRevealAudio);
     return () => {
       controller.abort();
+      loginRequest.current?.abort();
       revealRequest.current?.abort();
+      seenRequest.current?.abort();
+      saveRequest.current?.abort();
       downloadRequest.current?.abort();
       window.removeEventListener("pagehide", stopRevealAudio);
       stopRevealAudio();
     };
   }, [stopRevealAudio]);
 
+  const registerSeen = useCallback(async (attempt: RevealAttempt) => {
+    if (!attempt.canSave || seenRequest.current) return;
+    const request = new AbortController();
+    seenRequest.current = request;
+    setSeenError("");
+    try {
+      await post<{ ok: true }>("/api/participant", { action: "seen", accessCode: attempt.accessCode, code: attempt.code }, request.signal);
+      if (!request.signal.aborted) {
+        setAccount((current) => current?.accessCode === attempt.accessCode ? { ...current, revealed: true } : current);
+      }
+    } catch {
+      if (!request.signal.aborted) setSeenError("Não foi possível confirmar a visualização. Seu resultado continua disponível.");
+    } finally {
+      if (seenRequest.current === request) seenRequest.current = null;
+    }
+  }, []);
+
   useEffect(() => {
-    if (revealed) revealOutput.current?.focus({ preventScroll: true });
-  }, [revealed]);
+    if (!revealed) return;
+    revealOutput.current?.focus({ preventScroll: true });
+    if (revealed.canSave) void registerSeen(revealed);
+  }, [revealed, registerSeen]);
 
   const clearSavedCalendar = useCallback(() => {
     downloadRequest.current?.abort();
@@ -282,9 +318,40 @@ export default function Home() {
     setSaveError("");
   }, [clearSavedCalendar, stopRevealAudio]);
 
+  async function login(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (loginRequest.current) return;
+    const request = new AbortController();
+    loginRequest.current = request;
+    setLoginError("");
+    setLoggingIn(true);
+    try {
+      const result = await post<ParticipantResponse>("/api/participant", { action: "login", accessCode: accessInput }, request.signal);
+      if (request.signal.aborted) return;
+      setAccount({ ...result, accessCode: accessInput });
+      setAccessInput("");
+      requestAnimationFrame(() => document.getElementById(result.profileComplete ? "as-reveal-heading" : "as-profile-heading")?.focus());
+    } catch (error) {
+      if (!request.signal.aborted) setLoginError(error instanceof Error ? error.message : "Não foi possível acessar sua conta.");
+    } finally {
+      if (loginRequest.current === request) loginRequest.current = null;
+      if (!request.signal.aborted) setLoggingIn(false);
+    }
+  }
+
+  async function saveProfile(profile: ParticipantDraft, signal: AbortSignal) {
+    if (!account) return;
+    const { accessCode } = account;
+    const result = await post<ParticipantResponse>("/api/participant", { action: "profile", accessCode, ...profile }, signal);
+    if (signal.aborted) return;
+    setAccount((current) => current?.accessCode === accessCode ? { ...result, accessCode, revealed: current.revealed || result.revealed } : current);
+    setEditingProfile(false);
+    requestAnimationFrame(() => document.getElementById("as-reveal-heading")?.focus());
+  }
+
   async function reveal(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (revealRequest.current) return;
+    if (!account?.profileComplete || revealRequest.current) return;
     const request = new AbortController();
     revealRequest.current = request;
     setRevealError("");
@@ -301,10 +368,9 @@ export default function Home() {
     }
 
     try {
-      const result = await post<RevealResult>("/api/reveal", { code }, request.signal);
+      const result = await post<RevealResult>("/api/reveal", { accessCode: account.accessCode, code }, request.signal);
       if (request.signal.aborted) return;
-      const attempt = { ...result, code };
-      setMode(result.mode);
+      const attempt = { ...result, code, accessCode: account.accessCode };
       const frames = result.canSave && !window.matchMedia(REDUCED_MOTION).matches ? rouletteFrames(result) : [];
 
       if (frames.length) {
@@ -317,8 +383,8 @@ export default function Home() {
         completeReveal(attempt);
       }
     } catch (error) {
-      stopRevealAudio();
       if (!request.signal.aborted) {
+        stopRevealAudio();
         setRevealError(error instanceof Error ? error.message : "Não conseguimos abrir a revelação. Tente novamente.");
       }
     } finally {
@@ -329,13 +395,32 @@ export default function Home() {
 
   function resetReveal() {
     stopRevealAudio();
+    seenRequest.current?.abort();
+    seenRequest.current = null;
+    setSeenError("");
     setRevealed(null);
     setCode("");
+    setRevealError("");
     setSelected([]);
     clearSavedCalendar();
     setSaveError("");
     setMonth(0);
     requestAnimationFrame(() => codeInput.current?.focus());
+  }
+
+  function signOut() {
+    revealRequest.current?.abort();
+    revealRequest.current = null;
+    saveRequest.current?.abort();
+    saveRequest.current = null;
+    setLoadingReveal(false);
+    setSaving(false);
+    setReel(null);
+    setAccount(null);
+    setAccessInput("");
+    setEditingProfile(false);
+    resetReveal();
+    requestAnimationFrame(() => accessField.current?.focus());
   }
 
   function toggleSound() {
@@ -351,7 +436,9 @@ export default function Home() {
 
   async function saveAvailability(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!revealed?.canSave || saving) return;
+    if (!revealed?.canSave || saveRequest.current) return;
+    const request = new AbortController();
+    saveRequest.current = request;
     setSaving(true);
     clearSavedCalendar();
     setSaveError("");
@@ -361,15 +448,18 @@ export default function Home() {
       if (revealed.mode === "demo") {
         localStorage.setItem(DEMO_AVAILABILITY, JSON.stringify(days));
       } else {
-        await post<{ ok: true }>("/api/availability", { code: revealed.code, days });
+        await post<{ ok: true }>("/api/availability", { accessCode: revealed.accessCode, code: revealed.code, days }, request.signal);
       }
-      setSavedCalendar({ days, download: "ready" });
+      if (!request.signal.aborted) setSavedCalendar({ days, download: "ready" });
     } catch (error) {
-      setSaveError(revealed.mode === "demo"
-        ? "Este navegador não permitiu salvar a demonstração."
-        : error instanceof Error ? error.message : "Não conseguimos salvar. Tente novamente.");
+      if (!request.signal.aborted) {
+        setSaveError(revealed.mode === "demo"
+          ? "Este navegador não permitiu salvar a demonstração."
+          : error instanceof Error ? error.message : "Não conseguimos salvar. Tente novamente.");
+      }
     } finally {
-      setSaving(false);
+      if (saveRequest.current === request) saveRequest.current = null;
+      if (!request.signal.aborted) setSaving(false);
     }
   }
 
@@ -410,6 +500,8 @@ export default function Home() {
   const firstWeekday = new Date(YEAR, index, 1).getDay();
   const dayCount = new Date(YEAR, index + 1, 0).getDate();
   const calendarEditable = revealed?.canSave === true;
+  const showProfile = account && (!account.profileComplete || editingProfile);
+  const startHeading = !account ? "as-access-heading" : showProfile ? "as-profile-heading" : "as-reveal-heading";
 
   return (
     <div className="as-site">
@@ -438,16 +530,16 @@ export default function Home() {
         <section className="as-guide" aria-labelledby="as-guide-heading">
           <div className="as-guide-header">
             <h2 id="as-guide-heading">Como participar</h2>
-            <a href="#as-reveal-heading">Começar <ArrowRight size={16} aria-hidden="true" /></a>
+            <a href={`#${startHeading}`}>Começar <ArrowRight size={16} aria-hidden="true" /></a>
           </div>
-          <ol>
+          <ol role="list">
             <li>
               <span className="as-guide-icon"><KeyRound size={20} aria-hidden="true" /></span>
-              <div><h3>Use seu código</h3><p>Digite o código individual que você recebeu do organizador.</p></div>
+              <div><h3>Entre na sua conta</h3><p>Use o código de acesso individual que você recebeu do organizador.</p></div>
             </li>
             <li>
               <span className="as-guide-icon"><Gift size={20} aria-hidden="true" /></span>
-              <div><h3>Abra sua revelação</h3><p>A roleta mostra quem você tirou. Guarde o nome em segredo.</p></div>
+              <div><h3>Prepare o perfil e revele</h3><p>Cadastre foto, código Steam e três jogos. Use o código do sorteio e guarde o resultado em segredo.</p></div>
             </li>
             <li>
               <span className="as-guide-icon"><CalendarDays size={20} aria-hidden="true" /></span>
@@ -456,138 +548,205 @@ export default function Home() {
           </ol>
         </section>
 
-        <div className="as-workflow">
-          <section className="as-card as-reveal-card" aria-labelledby="as-reveal-heading">
-            <div className="as-reveal-top">
-              <div className="as-step"><span>01</span> A REVELAÇÃO</div>
-              <button className="as-sound-toggle" type="button" aria-label="Som da revelação" aria-pressed={soundOn} onClick={toggleSound}>
-                {soundOn ? <Volume2 size={16} aria-hidden="true" /> : <VolumeX size={16} aria-hidden="true" />}
-                {soundOn ? "Som ligado" : "Som desligado"}
-              </button>
+        {!account ? (
+          <section className="as-card as-access-card" aria-labelledby="as-access-heading">
+            <div>
+              <div className="as-step"><span>01</span> ACESSO DO PARTICIPANTE</div>
+              <h2 id="as-access-heading" tabIndex={-1}>Entre na sua conta</h2>
+              <p className="as-card-description">Use seu código de acesso para preparar o perfil. O código do sorteio será pedido na hora da revelação.</p>
             </div>
-            <h2 id="as-reveal-heading" tabIndex={-1}>Quem você tirou?</h2>
-            {revealed ? (
-              <div className="as-reveal-result">
-                <div
-                  className={revealed.canSave ? "as-person as-person-found" : "as-person as-person-incorrect"}
-                  ref={revealOutput}
-                  role="group"
-                  tabIndex={-1}
-                  aria-labelledby="as-result-label as-result-name"
-                >
-                  {revealed.canSave && <RevealConfetti />}
-                  {revealed.canSave && <ProfilePhoto person={revealed.person} />}
-                  <div>
-                    <p id="as-result-label">{revealed.canSave && <Sparkles size={14} aria-hidden="true" />}{revealed.canSave ? "Seu amigo secreto é" : "Código incorreto"}</p>
-                    <h3 id="as-result-name">{revealed.person.name}</h3>
-                    {revealed.person.nickname && <span className="as-person-nickname">“{revealed.person.nickname}”</span>}
-                  </div>
-                  {!revealed.canSave && <MemeFigure person={revealed.person} />}
-                </div>
-                <p className="as-reveal-hint">{revealed.canSave
-                  ? "Guarde o segredo e marque no calendário os dias em que você não pode participar."
-                  : "Confira o código recebido do organizador e tente de novo."}</p>
-                {calendarEditable && <a className="as-calendar-shortcut" href="#as-calendar-heading">Marcar meus dias <ArrowRight size={16} aria-hidden="true" /></a>}
-                <button className="as-text-button" type="button" disabled={saving} onClick={resetReveal}>Usar outro código</button>
+            <form className="as-access-form as-reveal-form" onSubmit={login}>
+              <label htmlFor="as-access-code">Seu código de acesso</label>
+              <div className="as-input-frame">
+                <KeyRound size={19} strokeWidth={1.7} aria-hidden="true" />
+                <input id="as-access-code" ref={accessField} inputMode="numeric" pattern="[0-9]+" maxLength={32} autoComplete="off"
+                  required value={accessInput} disabled={loggingIn} aria-invalid={Boolean(loginError)} placeholder="Digite os números"
+                  onChange={(event) => { setAccessInput(event.target.value.replace(/[^0-9]/g, "")); setLoginError(""); }} />
               </div>
-            ) : reel ? (
-              <Roulette reel={reel} onFinish={completeReveal} />
-            ) : (
-              <>
-                <p className="as-card-description">Digite o código que você recebeu para abrir sua revelação.</p>
-                <form className="as-reveal-form" onSubmit={reveal}>
-                  <label htmlFor="as-code">Seu código</label>
-                  <div className="as-input-frame">
-                    <KeyRound size={19} strokeWidth={1.7} aria-hidden="true" />
-                    <input
-                      id="as-code"
-                      ref={codeInput}
-                      name="code"
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]+"
-                      autoComplete="off"
-                      maxLength={32}
-                      required
-                      value={code}
-                      disabled={loadingReveal}
-                      placeholder="Digite os números"
-                      onChange={(event) => {
-                        setCode(event.target.value.replace(/[^0-9]/g, ""));
-                        setRevealError("");
-                      }}
-                    />
-                  </div>
-                  <button className="as-primary as-reveal-button" type="submit" disabled={loadingReveal}>
-                    <span><Gift size={18} aria-hidden="true" /> {loadingReveal ? "Abrindo…" : "Revelar meu amigo secreto"}</span>
-                    <ArrowRight size={17} aria-hidden="true" />
-                  </button>
-                  {revealError && <p className="as-error" role="alert">{revealError}</p>}
-                </form>
-                <div className="as-code-note"><LockKeyhole size={15} strokeWidth={1.7} aria-hidden="true" /> O código é individual. Guarde-o com você.</div>
-                {mode === "demo" && <p className="as-demo-note">Modo demonstração <span aria-hidden="true">·</span>{" "}<button type="button" onClick={() => { setCode(DEMO_CODE); setRevealError(""); codeInput.current?.focus(); }} disabled={loadingReveal}>Usar código {DEMO_CODE}</button></p>}
-              </>
-            )}
-          </section>
-
-          <section className="as-card as-calendar-card" aria-labelledby="as-calendar-heading">
-            <div className="as-step as-step-green"><span>02</span> A DATA DO ENCONTRO</div>
-            <h2 id="as-calendar-heading">Quando você não pode?</h2>
-            <p className="as-card-description">Selecione os dias em que você não pode participar. Se todos funcionarem, salve sem marcar nenhum.</p>
-
-            <form className="as-calendar-form" onSubmit={saveAvailability}>
-              <div className="as-calendar">
-                <div className="as-calendar-bar">
-                  <div className="as-calendar-month" aria-live="polite"><CalendarDays size={17} strokeWidth={1.8} aria-hidden="true" /> <h3>{name} {YEAR}</h3></div>
-                  <div className="as-calendar-controls">
-                    <button type="button" aria-label="Mês anterior" disabled={month === 0} onClick={() => setMonth(0)}><ChevronLeft size={18} aria-hidden="true" /></button>
-                    <button type="button" aria-label="Próximo mês" disabled={month === MONTHS.length - 1} onClick={() => setMonth(1)}><ChevronRight size={18} aria-hidden="true" /></button>
-                  </div>
-                </div>
-                <div className="as-calendar-grid">
-                  {WEEKDAYS.map((weekday) => <span key={weekday} className="as-weekday" aria-hidden="true">{weekday}</span>)}
-                  {Array.from({ length: firstWeekday }, (_, offset) => <span key={`blank-${offset}`} aria-hidden="true" />)}
-                  {Array.from({ length: dayCount }, (_, offset) => {
-                    const day = offset + 1;
-                    const date = `${YEAR}-${String(index + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-                    return (
-                      <button
-                        className="as-day"
-                        key={date}
-                        type="button"
-                        aria-label={DATE_LABEL.format(new Date(YEAR, index, day))}
-                        aria-pressed={selected.includes(date)}
-                        disabled={!calendarEditable || saving}
-                        onClick={() => toggleDay(date)}
-                      >{day}</button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {calendarEditable ? (
-                <>
-                  <div className="as-calendar-actions">
-                    <p className="as-day-count"><span aria-hidden="true" />{selected.length === 1 ? "1 dia indisponível" : `${selected.length} dias indisponíveis`}</p>
-                    <button className="as-primary as-save-button" type="submit" disabled={saving}><Check size={17} aria-hidden="true" /> {saving ? "Salvando…" : "Salvar minhas datas"}</button>
-                  </div>
-                  {savedCalendar && (
-                    <div className="as-calendar-receipt">
-                      <p className="as-success" role="status"><Check size={17} aria-hidden="true" /> {revealed.mode === "demo" ? "Demonstração salva neste navegador." : "Suas datas foram salvas."}</p>
-                      <button className="as-pdf-button" type="button" disabled={savedCalendar.download === "loading"} onClick={downloadCalendar}>
-                        <Download size={16} aria-hidden="true" /> {savedCalendar.download === "loading" ? "Gerando PDF…" : "Baixar calendário em PDF"}
-                      </button>
-                      {savedCalendar.download === "failed" && <p className="as-error" role="alert">Não foi possível gerar o PDF. Tente novamente.</p>}
-                    </div>
-                  )}
-                  {saveError && <p className="as-error" role="alert">{saveError}</p>}
-                </>
-              ) : (
-                <p className="as-calendar-locked"><LockKeyhole size={15} strokeWidth={1.8} aria-hidden="true" /> Use seu código para liberar o calendário.</p>
-              )}
+              <button className="as-primary" type="submit" disabled={loggingIn}>
+                {loggingIn ? "Entrando…" : "Entrar na minha conta"} <ArrowRight size={17} aria-hidden="true" />
+              </button>
+              {loginError && <p className="as-error" role="alert">{loginError}</p>}
+              {mode === "demo" && <p className="as-demo-note">Modo demonstração <span aria-hidden="true">·</span>{" "}<button type="button" disabled={loggingIn} onClick={() => { setAccessInput(DEMO_CODE); setLoginError(""); accessField.current?.focus(); }}>Usar código {DEMO_CODE}</button></p>}
             </form>
           </section>
-        </div>
+        ) : (
+          <>
+            <div className="as-account-bar">
+              <div className="as-account-name">
+                <span className="as-account-icon"><UserRound size={19} aria-hidden="true" /></span>
+                <div><span>{account.mode === "demo" ? "Conta de demonstração" : "Sua conta"}</span><strong>{account.participant.name}{account.participant.nickname ? ` · ${account.participant.nickname}` : ""}</strong></div>
+              </div>
+              <div className="as-account-actions">
+                {account.profileComplete && !showProfile && (
+                  <button type="button" className="as-account-button" disabled={saving || loadingReveal || Boolean(reel)} onClick={() => {
+                    setEditingProfile(true);
+                    requestAnimationFrame(() => document.getElementById("as-profile-heading")?.focus());
+                  }}>Editar perfil</button>
+                )}
+                <button type="button" className="as-account-button" onClick={signOut}><LogOut size={15} aria-hidden="true" /> Sair</button>
+              </div>
+            </div>
+
+            {showProfile ? (
+              <ParticipantProfile
+                key={account.participant.id}
+                participant={account.participant}
+                profileComplete={account.profileComplete}
+                demo={account.mode === "demo"}
+                onSave={saveProfile}
+                onCancel={account.profileComplete ? () => {
+                  setEditingProfile(false);
+                  requestAnimationFrame(() => document.getElementById("as-reveal-heading")?.focus());
+                } : undefined}
+              />
+            ) : (
+              <>
+                <div className="as-workflow">
+                  <section className="as-card as-reveal-card" aria-labelledby="as-reveal-heading">
+                    <div className="as-reveal-top">
+                      <div className="as-step"><span>03</span> A REVELAÇÃO</div>
+                      <button className="as-sound-toggle" type="button" aria-label="Som da revelação" aria-pressed={soundOn} onClick={toggleSound}>
+                        {soundOn ? <Volume2 size={16} aria-hidden="true" /> : <VolumeX size={16} aria-hidden="true" />}
+                        {soundOn ? "Som ligado" : "Som desligado"}
+                      </button>
+                    </div>
+                    <h2 id="as-reveal-heading" tabIndex={-1}>Quem você tirou?</h2>
+                    {revealed ? (
+                      <div className="as-reveal-result">
+                        <div
+                          className={revealed.canSave ? "as-person as-person-found" : "as-person as-person-incorrect"}
+                          ref={revealOutput}
+                          role="group"
+                          tabIndex={-1}
+                          aria-labelledby="as-result-label as-result-name"
+                        >
+                          {revealed.canSave && <RevealConfetti />}
+                          {revealed.canSave && <ProfilePhoto person={revealed.person} />}
+                          <div>
+                            <p id="as-result-label">{revealed.canSave && <Sparkles size={14} aria-hidden="true" />}{revealed.canSave ? "Seu amigo secreto é" : "Código incorreto"}</p>
+                            <h3 id="as-result-name">{revealed.person.name}</h3>
+                            {revealed.person.nickname && <span className="as-person-nickname">“{revealed.person.nickname}”</span>}
+                          </div>
+                          {!revealed.canSave && <MemeFigure person={revealed.person} />}
+                        </div>
+                        <p className="as-reveal-hint">{revealed.canSave
+                          ? "Guarde o segredo e marque no calendário os dias em que você não pode participar."
+                          : "Confira o código recebido do organizador e tente de novo."}</p>
+                        {revealed.canSave && (
+                          <section className="as-recipient-games" aria-labelledby="as-recipient-games-heading">
+                            <h3 id="as-recipient-games-heading">Jogos que a pessoa quer ganhar</h3>
+                            {revealed.person.games?.length ? <GameTiles games={revealed.person.games} />
+                              : <p className="as-card-description">A pessoa sorteada ainda não cadastrou os jogos.</p>}
+                          </section>
+                        )}
+                        {seenError && <div className="as-seen-retry"><p className="as-error" role="alert">{seenError}</p><button className="as-text-button" type="button" onClick={() => void registerSeen(revealed)}>Tentar registrar novamente</button></div>}
+                        {calendarEditable && <a className="as-calendar-shortcut" href="#as-calendar-heading">Marcar meus dias <ArrowRight size={16} aria-hidden="true" /></a>}
+                        <button className="as-text-button" type="button" disabled={saving} onClick={resetReveal}>Usar outro código</button>
+                      </div>
+                    ) : reel ? (
+                      <Roulette reel={reel} onFinish={completeReveal} />
+                    ) : (
+                      <>
+                        <p className="as-card-description">Digite seu código do sorteio para revelar a pessoa que você tirou.</p>
+                        <form className="as-reveal-form" onSubmit={reveal}>
+                          <label htmlFor="as-code">Seu código do sorteio</label>
+                          <div className="as-input-frame">
+                            <KeyRound size={19} strokeWidth={1.7} aria-hidden="true" />
+                            <input
+                              id="as-code"
+                              ref={codeInput}
+                              name="code"
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]+"
+                              autoComplete="off"
+                              maxLength={32}
+                              required
+                              value={code}
+                              disabled={loadingReveal}
+                              placeholder="Digite os números"
+                              onChange={(event) => {
+                                setCode(event.target.value.replace(/[^0-9]/g, ""));
+                                setRevealError("");
+                              }}
+                            />
+                          </div>
+                          <button className="as-primary as-reveal-button" type="submit" disabled={loadingReveal}>
+                            <span><Gift size={18} aria-hidden="true" /> {loadingReveal ? "Abrindo…" : "Revelar meu amigo secreto"}</span>
+                            <ArrowRight size={17} aria-hidden="true" />
+                          </button>
+                          {revealError && <p className="as-error" role="alert">{revealError}</p>}
+                        </form>
+                        <div className="as-code-note"><LockKeyhole size={15} strokeWidth={1.7} aria-hidden="true" /> O código é individual. Guarde-o com você.</div>
+                        {account.mode === "demo" && <p className="as-demo-note">Modo demonstração <span aria-hidden="true">·</span>{" "}<button type="button" onClick={() => { setCode(DEMO_CODE); setRevealError(""); codeInput.current?.focus(); }} disabled={loadingReveal}>Usar código {DEMO_CODE}</button></p>}
+                      </>
+                    )}
+                  </section>
+
+                  <section className="as-card as-calendar-card" aria-labelledby="as-calendar-heading">
+                    <div className="as-step as-step-green"><span>04</span> A DATA DO ENCONTRO</div>
+                    <h2 id="as-calendar-heading">Quando você não pode?</h2>
+                    <p className="as-card-description">Selecione os dias em que você não pode participar. Se todos funcionarem, salve sem marcar nenhum.</p>
+
+                    <form className="as-calendar-form" onSubmit={saveAvailability}>
+                      <div className="as-calendar">
+                        <div className="as-calendar-bar">
+                          <div className="as-calendar-month" aria-live="polite"><CalendarDays size={17} strokeWidth={1.8} aria-hidden="true" /> <h3>{name} {YEAR}</h3></div>
+                          <div className="as-calendar-controls">
+                            <button type="button" aria-label="Mês anterior" disabled={month === 0} onClick={() => setMonth(0)}><ChevronLeft size={18} aria-hidden="true" /></button>
+                            <button type="button" aria-label="Próximo mês" disabled={month === MONTHS.length - 1} onClick={() => setMonth(1)}><ChevronRight size={18} aria-hidden="true" /></button>
+                          </div>
+                        </div>
+                        <div className="as-calendar-grid">
+                          {WEEKDAYS.map((weekday) => <span key={weekday} className="as-weekday" aria-hidden="true">{weekday}</span>)}
+                          {Array.from({ length: firstWeekday }, (_, offset) => <span key={`blank-${offset}`} aria-hidden="true" />)}
+                          {Array.from({ length: dayCount }, (_, offset) => {
+                            const day = offset + 1;
+                            const date = `${YEAR}-${String(index + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+                            return (
+                              <button
+                                className="as-day"
+                                key={date}
+                                type="button"
+                                aria-label={DATE_LABEL.format(new Date(YEAR, index, day))}
+                                aria-pressed={selected.includes(date)}
+                                disabled={!calendarEditable || saving}
+                                onClick={() => toggleDay(date)}
+                              >{day}</button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {calendarEditable ? (
+                        <>
+                          <div className="as-calendar-actions">
+                            <p className="as-day-count"><span aria-hidden="true" />{selected.length === 1 ? "1 dia indisponível" : `${selected.length} dias indisponíveis`}</p>
+                            <button className="as-primary as-save-button" type="submit" disabled={saving}><Check size={17} aria-hidden="true" /> {saving ? "Salvando…" : "Salvar minhas datas"}</button>
+                          </div>
+                          {savedCalendar && (
+                            <div className="as-calendar-receipt">
+                              <p className="as-success" role="status"><Check size={17} aria-hidden="true" /> {revealed.mode === "demo" ? "Demonstração salva neste navegador." : "Suas datas foram salvas."}</p>
+                              <button className="as-pdf-button" type="button" disabled={savedCalendar.download === "loading"} onClick={downloadCalendar}>
+                                <Download size={16} aria-hidden="true" /> {savedCalendar.download === "loading" ? "Gerando PDF…" : "Baixar calendário em PDF"}
+                              </button>
+                              {savedCalendar.download === "failed" && <p className="as-error" role="alert">Não foi possível gerar o PDF. Tente novamente.</p>}
+                            </div>
+                          )}
+                          {saveError && <p className="as-error" role="alert">{saveError}</p>}
+                        </>
+                      ) : (
+                        <p className="as-calendar-locked"><LockKeyhole size={15} strokeWidth={1.8} aria-hidden="true" /> Revele seu amigo secreto para liberar o calendário.</p>
+                      )}
+                    </form>
+                  </section>
+                </div>
+                {revealed?.canSave && <SteamDirectory friends={revealed.steamFriends ?? []} />}
+              </>
+            )}
+          </>
+        )}
       </main>
 
       <footer className="as-shell as-footer"><Gift size={16} strokeWidth={1.7} aria-hidden="true" /> <span>Amigo Secreto {YEAR}</span> <span aria-hidden="true">·</span> <span>Novembro e dezembro</span></footer>

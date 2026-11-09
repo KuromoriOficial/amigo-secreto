@@ -244,6 +244,284 @@ button, input, select, textarea { font: inherit; }
 .as-guide h3 { margin: 0 0 4px; color: var(--as-ink); font-size: 13px; font-weight: 800; }
 .as-guide p { margin: 0; color: var(--as-muted); font-size: 11px; font-weight: 650; line-height: 1.55; }
 
+.as-access-card,
+.as-account-bar,
+.as-profile-card,
+.as-steam-directory { margin-top: 20px; }
+
+.as-access-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr);
+  align-items: center;
+  gap: clamp(22px, 5vw, 66px);
+  background: radial-gradient(ellipse at 0 0, #edf2e7, transparent 65%), var(--as-paper);
+}
+
+.as-access-card .as-access-form { margin: 0; }
+.as-access-form .as-primary { justify-content: space-between; margin-top: 3px; }
+.as-access-form .as-demo-note { margin-top: 6px; padding-top: 8px; }
+
+.as-account-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 15px;
+  border: 1px solid #dce6d5;
+  border-radius: 14px;
+  background: #edf3e7;
+}
+
+.as-account-name {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.as-account-icon {
+  display: grid;
+  width: 37px;
+  height: 37px;
+  flex: 0 0 37px;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--as-green);
+  color: var(--as-paper);
+}
+
+.as-account-name > div > span { display: block; margin-bottom: 2px; color: var(--as-muted); font-size: 10px; font-weight: 800; }
+.as-account-name strong { color: var(--as-green); font-size: 13px; font-weight: 800; overflow-wrap: anywhere; }
+.as-account-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+
+.as-account-button,
+.as-steam-copy {
+  display: inline-flex;
+  min-height: 35px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 1px solid #cbd8c6;
+  border-radius: 8px;
+  background: var(--as-paper);
+  color: var(--as-green);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.as-account-button:hover:not(:disabled), .as-steam-copy:hover { background: #e9f2e5; }
+.as-account-button:disabled { opacity: .62; }
+
+.as-profile-form { margin-top: 19px; }
+.as-profile-grid { display: grid; grid-template-columns: minmax(0, .83fr) minmax(0, 1.17fr); align-items: start; gap: 15px; }
+.as-profile-column { display: grid; gap: 13px; }
+
+.as-profile-box {
+  min-width: 0;
+  margin: 0;
+  padding: 10px 15px 15px;
+  border: 1px solid #e5dfd2;
+  border-radius: 12px;
+  background: #fcf9f2;
+}
+
+.as-profile-box legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  color: var(--as-green);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.as-profile-box p {
+  margin: 8px 0 0;
+  color: var(--as-muted);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.55;
+}
+
+.as-profile-box .as-error { color: #9a3325; }
+.as-profile-box .as-game-count { margin: 0 0 10px; color: #385b46; font-weight: 800; }
+.as-profile-box .as-text-button { min-height: 31px; }
+.as-profile-box .as-profile-confirmed { display: flex; align-items: center; gap: 4px; color: #2e5c41; font-weight: 800; }
+.as-profile-photo-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.as-profile-photo-row p { margin: 0; }
+
+.as-profile-photo {
+  display: grid;
+  width: 61px;
+  height: 61px;
+  flex: 0 0 61px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 11px;
+  background: #e4eee0;
+  color: #4a7057;
+}
+
+.as-profile-photo img { width: 100%; height: 100%; object-fit: cover; }
+.as-profile-label { display: block; margin: 0 0 6px; color: var(--as-ink); font-size: 12px; font-weight: 800; }
+
+.as-photo-file {
+  width: 100%;
+  color: var(--as-muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.as-photo-file::file-selector-button {
+  min-height: 34px;
+  margin-right: 7px;
+  padding: 5px 9px;
+  border: 1px solid #cdd9c8;
+  border-radius: 8px;
+  background: var(--as-paper);
+  color: var(--as-green);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+}
+
+.as-profile-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 13px; margin-top: 15px; }
+.as-profile-actions .as-text-button { margin: 0; }
+.as-demo-profile { margin-top: 9px; }
+
+.as-game-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.as-game-tiles:empty { display: none; }
+
+.as-game-tile {
+  position: relative;
+  min-width: 0;
+  border: 1px solid #e4dfd2;
+  border-radius: 8px;
+  background: var(--as-paper);
+}
+
+.as-game-tile img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 460 / 215;
+  border-radius: 7px 7px 0 0;
+  background: #e1ebde;
+  object-fit: cover;
+}
+
+.as-game-tile span {
+  display: block;
+  padding: 6px;
+  color: var(--as-ink);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.as-game-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  width: 27px;
+  height: 27px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #eee1d3;
+  border-radius: 50%;
+  background: var(--as-paper);
+  color: #8a372b;
+  cursor: pointer;
+}
+
+.as-game-remove:hover:not(:disabled) { background: #f9e4d9; }
+
+.as-game-results {
+  display: grid;
+  gap: 4px;
+  max-height: 240px;
+  margin: 9px 0 0;
+  padding: 0 2px;
+  overflow: auto;
+  list-style: none;
+}
+
+.as-game-results li {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 4px;
+  border: 1px solid #e8e1d5;
+  border-radius: 8px;
+  background: var(--as-paper);
+  font-size: 11px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.as-game-results img { width: 100%; aspect-ratio: 460 / 215; border-radius: 5px; background: #e1ebde; object-fit: cover; }
+
+.as-game-results button {
+  min-height: 31px;
+  padding: 4px 6px;
+  border: 1px solid #d2dfcf;
+  border-radius: 6px;
+  background: #eff5ec;
+  color: var(--as-green);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.as-game-results button:hover:not(:disabled) { background: #dcead7; }
+.as-game-results button:disabled { opacity: .59; }
+
+.as-recipient-games { margin-top: 17px; }
+.as-recipient-games h3 { margin: 0 0 8px; color: var(--as-green); font-size: 13px; font-weight: 800; }
+.as-seen-retry { margin-top: 9px; }
+
+.as-steam-members {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 15px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.as-steam-members li {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid #e6e0d3;
+  border-radius: 9px;
+  background: #faf7f0;
+}
+
+.as-steam-members li > div { min-width: 0; }
+.as-steam-members strong { color: var(--as-green); font-size: 12px; font-weight: 800; overflow-wrap: anywhere; }
+.as-steam-members code, .as-steam-missing { display: block; margin-top: 3px; color: var(--as-muted); font-size: 11px; overflow-wrap: anywhere; }
+.as-steam-members code { color: var(--as-ink); font-weight: 800; }
+.as-steam-copy { flex: none; }
+.as-steam-copy-status { margin: 10px 0 0; color: #315b44; font-size: 12px; font-weight: 750; }
+
 .as-workflow {
   display: grid;
   grid-template-columns: minmax(0, .89fr) minmax(0, 1.11fr);
@@ -788,6 +1066,7 @@ button, input, select, textarea { font: inherit; }
   .as-hero-copy { padding-left: 32px; }
   .as-workflow { gap: 16px; }
   .as-card { padding: 22px; }
+  .as-steam-members { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 640px) {
@@ -815,6 +1094,13 @@ button, input, select, textarea { font: inherit; }
   .as-guide li { padding: 8px; }
   .as-guide-icon { width: 31px; height: 31px; flex-basis: 31px; }
   .as-guide-icon svg { width: 17px; height: 17px; }
+
+  .as-access-card, .as-account-bar, .as-profile-card, .as-steam-directory { margin-top: 16px; }
+  .as-access-card, .as-profile-grid, .as-steam-members { grid-template-columns: minmax(0, 1fr); }
+  .as-account-bar { padding: 9px; }
+  .as-account-actions { gap: 4px; }
+  .as-account-button { padding-inline: 6px; }
+  .as-profile-box { padding-inline: 11px; }
 
   .as-workflow { grid-template-columns: minmax(0, 1fr); margin-top: 17px; }
   .as-card { padding: 20px; border-radius: 17px; }

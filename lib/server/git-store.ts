@@ -1,7 +1,9 @@
 import { env } from "cloudflare:workers";
 import { Buffer } from "node:buffer";
 import type { SealedAssignment } from "../offline-crypto";
+import { isSteamFriendCode, parseSteamGames, type SteamGame } from "../steam-games";
 import { ApiError } from "./http";
+import type { AccessCredential, VaultCode } from "./vault";
 
 declare global {
   namespace Cloudflare {
@@ -21,6 +23,13 @@ export type StoredParticipant = {
   code?: string;
   recipientId?: string;
   sealed?: SealedAssignment;
+  access?: AccessCredential;
+  drawCode?: VaultCode;
+  accessedAt?: string;
+  revealedAt?: string;
+  steamCode?: string;
+  games?: SteamGame[];
+  photoAccepted?: boolean;
   unavailableDays: string[] | null;
 };
 
@@ -118,6 +127,16 @@ export function isSealedAssignment(value: unknown): value is SealedAssignment {
     typeof value.ciphertext === "string" && /^[A-Za-z0-9_-]{69}[AQgw]$/.test(value.ciphertext);
 }
 
+function isVaultCode(value: unknown, length: number): value is VaultCode {
+  return isRecord(value) && typeof value.iv === "string" && /^[A-Za-z0-9_-]{16}$/.test(value.iv) &&
+    typeof value.ciphertext === "string" && value.ciphertext.length === length && /^[A-Za-z0-9_-]+$/.test(value.ciphertext);
+}
+
+function isAccessCredential(value: unknown): value is AccessCredential {
+  return isRecord(value) && typeof value.lookup === "string" && /^[a-f0-9]{64}$/.test(value.lookup) &&
+    isVaultCode(value, 48);
+}
+
 async function githubObject(response: Response): Promise<Record<string, unknown>> {
   if (!response.ok) return githubError(response);
   const value: unknown = await response.json().catch(() => undefined);
@@ -138,6 +157,13 @@ function isParticipant(value: unknown): value is StoredParticipant {
     typeof value.photo === "string" && (value.code === undefined || typeof value.code === "string") &&
     (value.recipientId === undefined || typeof value.recipientId === "string") &&
     (value.sealed === undefined || isSealedAssignment(value.sealed)) &&
+    (value.access === undefined || isAccessCredential(value.access)) &&
+    (value.drawCode === undefined || isVaultCode(value.drawCode, 62)) &&
+    (value.accessedAt === undefined || typeof value.accessedAt === "string") &&
+    (value.revealedAt === undefined || typeof value.revealedAt === "string") &&
+    (value.steamCode === undefined || isSteamFriendCode(value.steamCode)) &&
+    (value.games === undefined || parseSteamGames(value.games) !== null) &&
+    (value.photoAccepted === undefined || typeof value.photoAccepted === "boolean") &&
     (value.unavailableDays === null || (Array.isArray(value.unavailableDays) &&
       value.unavailableDays.every((day) => typeof day === "string")));
 }

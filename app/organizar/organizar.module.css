@@ -168,6 +168,7 @@
 
 .form input,
 .participantForm input:not([type="file"]),
+.auditField input,
 .calendarActions select {
   color: var(--organizer-ink);
   background: #fffefa;
@@ -319,6 +320,12 @@
   gap: 20px;
 }
 
+.column {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+
 .card {
   display: grid;
   gap: 17px;
@@ -382,11 +389,16 @@
 }
 
 .roster li {
-  display: flex;
-  align-items: center;
+  display: grid;
   gap: 10px;
   padding-block: 10px;
   border-bottom: 1px solid var(--organizer-line);
+}
+
+.personRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .roster li:first-child {
@@ -415,6 +427,52 @@
   font-size: 0.73rem;
 }
 
+.accessTools {
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+}
+
+.credentialGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12.5rem), 1fr));
+  gap: 7px;
+}
+
+.credential {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.credential > span,
+.credential > small {
+  color: var(--organizer-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 5px;
+}
+
+.badge {
+  color: var(--organizer-muted);
+  background: #f4eee1;
+  border-radius: 8px;
+  padding: 4px 6px;
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.badgeDone {
+  color: #1d6349;
+  background: #e8f2e8;
+}
+
 .rowActions,
 .formActions,
 .calendarActions,
@@ -440,6 +498,68 @@
 .participantForm h3 {
   margin: 0 0 3px;
   font-size: 0.96rem;
+}
+
+.steamPicker,
+.trackingEditor {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 4px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--organizer-line);
+  border-radius: 10px;
+}
+
+.steamPicker legend,
+.trackingEditor legend {
+  padding-inline: 4px;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.gameSearch {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.games,
+.pairs {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.games li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--organizer-line);
+  overflow-wrap: anywhere;
+  font-size: 0.76rem;
+}
+
+.games img {
+  width: 50px;
+  height: 25px;
+  border-radius: 3px;
+  background: var(--organizer-mint);
+  object-fit: cover;
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.shell .checkbox input {
+  accent-color: var(--organizer-green);
 }
 
 .photoUpload {
@@ -542,6 +662,49 @@
   margin-top: 12px;
 }
 
+.warning {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  background: #fcf1dd;
+  border: 1px solid #e8d1a6;
+  border-radius: 12px;
+}
+
+.warning p {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.auditField {
+  display: grid;
+  gap: 5px;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.pairs li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--organizer-line);
+  overflow-wrap: anywhere;
+  font-size: 0.82rem;
+}
+
+.pairs small {
+  display: block;
+  color: var(--organizer-muted);
+}
+
+.pairAction {
+  color: var(--organizer-muted);
+  font-size: 0.72rem;
+}
+
 .shell .code {
   display: inline-flex;
   align-items: center;
@@ -552,11 +715,18 @@
   border: 1px solid #d6e3d4;
   border-radius: 8px;
   cursor: pointer;
+  max-width: 100%;
   font: 700 0.76rem/1.35 ui-monospace, monospace;
 }
 
 .code span {
+  min-width: 0;
+  overflow-wrap: anywhere;
   user-select: all;
+}
+
+.code svg {
+  flex: 0 0 auto;
 }
 
 .code:hover {
@@ -696,7 +866,7 @@
     font-size: 1.35rem;
   }
 
-  .roster li {
+  .personRow {
     gap: 8px;
   }
 
