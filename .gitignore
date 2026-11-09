@@ -12,6 +12,7 @@
 # Generated builds and framework state
 /dist/
 /dist-pages/
+/public/sorteio-offline.html
 /.next/
 /.vinext/
 /out/

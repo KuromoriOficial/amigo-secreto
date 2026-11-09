@@ -449,13 +449,15 @@
   min-width: 0;
 }
 
-.photoUpload input {
+.photoUpload input,
+.drawFile input {
   min-width: 0;
   max-width: 100%;
   font-size: 0.78rem;
 }
 
-.photoUpload input::file-selector-button {
+.photoUpload input::file-selector-button,
+.drawFile input::file-selector-button {
   color: var(--organizer-green);
   background: var(--organizer-paper);
   border: 1px solid var(--organizer-line);
@@ -483,6 +485,10 @@
   font-size: 0.87rem;
 }
 
+.steps li > div {
+  min-width: 0;
+}
+
 .steps li > span {
   display: grid;
   place-items: center;
@@ -502,6 +508,27 @@
   color: var(--organizer-muted);
   line-height: 1.5;
   font-size: 0.82rem;
+}
+
+.steps p,
+.notice,
+.filename {
+  overflow-wrap: anywhere;
+}
+
+.steps .formActions,
+.drawFile {
+  margin: 8px 0 6px;
+}
+
+.drawFile {
+  display: grid;
+  gap: 5px;
+}
+
+.drawFile label {
+  font-size: 0.78rem;
+  font-weight: 800;
 }
 
 .confirm {

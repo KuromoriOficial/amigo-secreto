@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
-import { hasGitStorage, readEvent, updateEvent, type StoredEvent } from "./git-store";
+import { OFFLINE_CODE_LENGTH, deriveOfflineLookup, openOfflineRecipient, type SealedAssignment } from "../offline-crypto";
+import { hasGitStorage, isSealedAssignment, readEvent, updateEvent, type StoredEvent } from "./git-store";
 import { ApiError } from "./http";
 
 declare global {
@@ -30,6 +31,8 @@ const dates = Array.from({ length: 61 }, (_, offset) =>
   new Date(Date.UTC(2026, 10, offset + 1)).toISOString().slice(0, 10),
 );
 const eventDates = new Set(dates);
+const legacyCodeLength = 12;
+const participantIdPattern = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
 type Mode = "demo" | "live";
 type Profile = { name: string; nickname?: string; photo: string };
@@ -64,6 +67,24 @@ function unavailableDays(input: unknown) {
   return [...new Set<string>(input)].sort();
 }
 
+function isLiveCode(code: string) {
+  return code.length === legacyCodeLength || code.length === OFFLINE_CODE_LENGTH;
+}
+
+async function matchingAssignment(event: StoredEvent, code: string) {
+  if (!event.drawn || !isLiveCode(code)) return undefined;
+
+  const lookup = code.length === OFFLINE_CODE_LENGTH ? await deriveOfflineLookup(code) : undefined;
+  const voter = event.participants.find((person) => lookup ? person.sealed?.lookup === lookup : person.code === code);
+  if (!voter) return undefined;
+
+  const recipientId = voter.sealed
+    ? await openOfflineRecipient(code, voter.id, voter.sealed).catch(() => undefined)
+    : voter.recipientId;
+  const recipient = event.participants.find((person) => person.id === recipientId && person.id !== voter.id);
+  return recipient ? { voter, recipient } : undefined;
+}
+
 export async function publicEvent() {
   const event = await eventForParticipants();
   return { mode: event?.drawn ? "live" : "demo" };
@@ -74,19 +95,15 @@ export async function reveal(input: unknown) {
   const event = await eventForParticipants();
   const mode: Mode = event?.drawn ? "live" : "demo";
 
-  if (event?.drawn && code.length === 12) {
-    const voter = event.participants.find((person) => person.code === code);
-    const recipient = event.participants.find((person) => person.id === voter?.recipientId);
-
-    if (voter && recipient) {
-      return {
-        person: publicProfile(recipient),
-        candidates: event.participants.map(publicProfile),
-        canSave: true,
-        days: voter.unavailableDays ?? [],
-        mode,
-      };
-    }
+  const assignment = event && await matchingAssignment(event, code);
+  if (assignment) {
+    return {
+      person: publicProfile(assignment.recipient),
+      candidates: event.participants.map(publicProfile),
+      canSave: true,
+      days: assignment.voter.unavailableDays ?? [],
+      mode,
+    };
   }
 
   const demoMatch = mode === "demo" && code === demoCode;
@@ -102,11 +119,12 @@ export async function reveal(input: unknown) {
 export async function saveAvailability(codeInput: unknown, daysInput: unknown) {
   const code = numericCode(codeInput);
   const days = unavailableDays(daysInput);
-  if (code.length !== 12) throw new ApiError(403, "Use o código do sorteio para registrar suas datas.");
+  if (!isLiveCode(code)) throw new ApiError(403, "Use o código do sorteio para registrar suas datas.");
 
-  await updateEvent((current) => {
-    const participant = current.drawn && current.participants.find((person) => person.code === code);
-    if (!participant) throw new ApiError(403, "Use o código do sorteio para registrar suas datas.");
+  await updateEvent(async (current) => {
+    const assignment = await matchingAssignment(current, code);
+    if (!assignment) throw new ApiError(403, "Use o código do sorteio para registrar suas datas.");
+    const participant = assignment.voter;
     if (JSON.stringify(participant.unavailableDays) === JSON.stringify(days)) return current;
     return {
       ...current,
@@ -177,6 +195,8 @@ export async function organizerState() {
 
 function summarizeEvent(event: StoredEvent) {
   const phase = event.drawn ? "drawn" : "draft";
+  const offline = event.participants.some((person) => person.sealed !== undefined);
+  const drawMethod = event.drawn ? (offline ? "offline" : "online") : undefined;
   const unavailableCounts = new Map<string, number>();
   let responseCount = 0;
 
@@ -188,11 +208,12 @@ function summarizeEvent(event: StoredEvent) {
       }
     }
 
-    return { id, name, nickname, photo, code, responded: unavailableDays !== null };
+    return { id, name, nickname, photo, code: drawMethod === "online" ? code : undefined, responded: unavailableDays !== null };
   });
 
   return {
     phase,
+    drawMethod,
     participants,
     responseCount,
     dates: dates.map((date) => {
@@ -239,50 +260,58 @@ function validateRoster(input: unknown): Profile[] {
   });
 }
 
-function assignRecipients(ids: string[]) {
-  const recipients = [...ids];
-  do {
-    for (let index = recipients.length - 1; index > 0; index -= 1) {
-      const other = randomIndex(index + 1);
-      [recipients[index], recipients[other]] = [recipients[other], recipients[index]];
-    }
-  } while (recipients.some((recipient, index) => recipient === ids[index]));
-
-  return recipients;
-}
-
-function uniqueCodes(size: number) {
-  const codes = new Set<string>();
-  while (codes.size < size) {
-    const code = Array.from({ length: 12 }, () => randomIndex(10)).join("");
-    codes.add(code);
-  }
-  return [...codes];
-}
-
 export async function updateRoster(action: unknown, input: unknown) {
-  if (action !== "save" && action !== "draw") throw new ApiError(400, "Ação inválida.");
+  if (action === "draw") throw new ApiError(400, "Faça o sorteio no gerador offline e importe o arquivo criptografado.");
+  if (action !== "save") throw new ApiError(400, "Ação inválida.");
 
   const roster = validateRoster(input);
-  const drawing = action === "draw";
-  if (drawing && roster.length < 2) throw new ApiError(400, "Cadastre pelo menos duas pessoas para sortear.");
-
-  const ids = roster.map(() => crypto.randomUUID());
-  const recipients = drawing ? assignRecipients(ids) : [];
-  const codes = drawing ? uniqueCodes(roster.length) : [];
+  const participants = roster.map((person) => ({ ...person, id: crypto.randomUUID(), unavailableDays: null }));
   const event = await updateEvent((current) => {
     if (current.drawn) throw new ApiError(409, "O sorteio já aconteceu e a lista foi encerrada.");
-    return {
-      version: 1,
-      drawn: drawing,
-      participants: roster.map((person, index) => ({
-        ...person,
-        id: ids[index],
-        code: codes[index],
-        recipientId: recipients[index],
-        unavailableDays: null,
-      })),
-    };
+    return { version: 1, drawn: false, participants };
+  });
+  return summarizeEvent(event);
+}
+
+function offlineAssignments(input: unknown) {
+  const draw = input as { version?: unknown; assignments?: unknown } | null;
+  if (draw?.version !== 1 || !Array.isArray(draw.assignments) || draw.assignments.length < 2 || draw.assignments.length > 32) {
+    throw new ApiError(400, "Escolha um arquivo criptografado gerado pelo sorteador offline.");
+  }
+
+  const assignments = new Map<string, SealedAssignment>();
+  const lookups = new Set<string>();
+  for (const entry of draw.assignments as unknown[]) {
+    const participantId = (entry as { participantId?: unknown } | null)?.participantId;
+    if (typeof participantId !== "string" || !participantIdPattern.test(participantId) || !isSealedAssignment(entry)) {
+      throw new ApiError(400, "O arquivo criptografado contém uma entrada inválida.");
+    }
+    if (assignments.has(participantId) || lookups.has(entry.lookup)) {
+      throw new ApiError(400, "O arquivo criptografado contém participantes ou códigos duplicados.");
+    }
+    const { lookup, iv, ciphertext } = entry;
+    assignments.set(participantId, { lookup, iv, ciphertext });
+    lookups.add(lookup);
+  }
+  return assignments;
+}
+
+export async function importOfflineDraw(input: unknown) {
+  const assignments = offlineAssignments(input);
+  const rosterMismatch = "O arquivo não corresponde à lista salva. Exporte a lista atual e refaça o sorteio offline.";
+  const event = await updateEvent((current) => {
+    if (current.drawn) throw new ApiError(409, "O sorteio já aconteceu e a lista foi encerrada.");
+    const rosterIds = new Set(current.participants.map(({ id }) => id));
+    if (current.participants.length !== assignments.size || rosterIds.size !== assignments.size) {
+      throw new ApiError(409, rosterMismatch);
+    }
+
+    const participants = current.participants.map((person) => {
+      const sealed = assignments.get(person.id);
+      if (!sealed) throw new ApiError(409, rosterMismatch);
+      return { ...publicProfile(person), id: person.id, unavailableDays: person.unavailableDays, sealed };
+    });
+    return { ...current, drawn: true, participants };
   });
   return summarizeEvent(event);
 }

@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { Buffer } from "node:buffer";
+import type { SealedAssignment } from "../offline-crypto";
 import { ApiError } from "./http";
 
 declare global {
@@ -19,6 +20,7 @@ export type StoredParticipant = {
   photo: string;
   code?: string;
   recipientId?: string;
+  sealed?: SealedAssignment;
   unavailableDays: string[] | null;
 };
 
@@ -108,6 +110,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+export function isSealedAssignment(value: unknown): value is SealedAssignment {
+  return isRecord(value) &&
+    typeof value.lookup === "string" && /^[a-f0-9]{64}$/.test(value.lookup) &&
+    typeof value.iv === "string" && /^[A-Za-z0-9_-]{16}$/.test(value.iv) &&
+    // A 36-byte UUID and 16-byte AES-GCM tag occupy 70 canonical base64url characters.
+    typeof value.ciphertext === "string" && /^[A-Za-z0-9_-]{69}[AQgw]$/.test(value.ciphertext);
+}
+
 async function githubObject(response: Response): Promise<Record<string, unknown>> {
   if (!response.ok) return githubError(response);
   const value: unknown = await response.json().catch(() => undefined);
@@ -127,6 +137,7 @@ function isParticipant(value: unknown): value is StoredParticipant {
     (value.nickname === undefined || typeof value.nickname === "string") &&
     typeof value.photo === "string" && (value.code === undefined || typeof value.code === "string") &&
     (value.recipientId === undefined || typeof value.recipientId === "string") &&
+    (value.sealed === undefined || isSealedAssignment(value.sealed)) &&
     (value.unavailableDays === null || (Array.isArray(value.unavailableDays) &&
       value.unavailableDays.every((day) => typeof day === "string")));
 }
@@ -180,14 +191,14 @@ export async function readEvent() {
   return (await readSnapshot(config)).event;
 }
 
-export async function updateEvent(change: (current: StoredEvent) => StoredEvent) {
+export async function updateEvent(change: (current: StoredEvent) => StoredEvent | Promise<StoredEvent>) {
   const config = configuration();
   await requirePrivateRepository(config);
   let current = await readSnapshot(config);
 
   for (let attempt = 0; attempt < maxWriteAttempts; attempt += 1) {
     const before = JSON.stringify(current.event);
-    const updated = change(current.event);
+    const updated = await change(current.event);
     const after = JSON.stringify(updated);
     if (current.sha && after === before) return updated;
 

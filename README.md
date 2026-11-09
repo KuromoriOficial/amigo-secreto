@@ -6,8 +6,10 @@ O participante usa o [GitHub Pages](https://kuromorioficial.github.io/amigo-secr
 
 1. No GitHub, [crie um token de acesso refinado](https://github.com/settings/personal-access-tokens/new) limitado ao repositório `amigo-secreto-dados`. Em permissões de repositório, conceda **Contents: Read and write**. Escolha uma validade que cubra a coleta das respostas.
 2. No Windows, na pasta deste projeto, rode `powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\configurar-segredos.ps1`. Informe o token e crie a chave do organizador nos campos protegidos. Depois avise no chat que concluiu. O assistente pode usar o arquivo protegido do Windows para configurar os segredos do ambiente gerenciado.
-3. Depois da ativação, entre no painel com a chave que você criou. Cadastre os nomes e fotos e clique em **Fazer sorteio**. Envie a cada participante o link público e o código individual dele.
-4. Acompanhe no painel quem respondeu e quantas pessoas podem participar em cada data. Uma resposta sem datas marcadas indica disponibilidade em todos os dias.
+3. Depois da ativação, entre no painel com a chave que você criou. Cadastre os nomes e fotos, salve e baixe a lista do painel.
+4. Baixe o sorteador offline e abra o arquivo HTML no navegador. Selecione a lista e faça o sorteio. A ferramenta garante que cada participante seja tirado uma vez e que ninguém tire o próprio nome.
+5. Baixe os dois arquivos. Importe `sorteio-criptografado-2026.json` no painel. Abra `codigos-amigo-secreto-2026.txt` no Bloco de Notas e envie a cada participante o link público e o código individual. Quem tem um código pode consultar o resultado correspondente.
+6. Acompanhe no painel quem respondeu e quantas pessoas podem participar em cada data. Uma resposta sem datas marcadas indica disponibilidade em todos os dias.
 
 Enquanto a configuração está pendente, o código `482731` abre a demonstração. A demonstração salva datas apenas no navegador. Números incorretos mostram um meme aleatório e não registram respostas.
 

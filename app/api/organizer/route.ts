@@ -1,4 +1,4 @@
-import { organizerState, requireOrganizer, updateRoster } from "@/lib/server/event";
+import { importOfflineDraw, organizerState, requireOrganizer, updateRoster } from "@/lib/server/event";
 import { endpoint, readBody } from "@/lib/server/http";
 
 export const dynamic = "force-dynamic";
@@ -13,7 +13,8 @@ export function GET(request: Request) {
 export function POST(request: Request) {
   return endpoint(async () => {
     await requireOrganizer(request);
-    const { action, participants } = await readBody(request, 3_300_000);
+    const { action, draw, participants } = await readBody(request, 3_300_000);
+    if (action === "import") return importOfflineDraw(draw);
     return updateRoster(action, participants);
   });
 }

@@ -1,7 +1,7 @@
 "use client";
 
-import { ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Download, Gift, KeyRound, LockKeyhole, Sparkles } from "lucide-react";
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Download, Gift, KeyRound, LockKeyhole, Sparkles, Volume2, VolumeX } from "lucide-react";
+import { type CSSProperties, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { apiUrl, assetUrl, pageUrl } from "../lib/frontend-paths";
 
 const YEAR = 2026;
@@ -15,6 +15,20 @@ const DEMO_AVAILABILITY = `amigo-secreto-${YEAR}-demo-days`;
 const DATE_LABEL = new Intl.DateTimeFormat("pt-BR", { dateStyle: "full" });
 const REVEAL_DURATION = 2700;
 const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
+const REEL_NOTES = [
+  [0, 72], [.18, 76], [.36, 79], [.56, 84],
+  [.8, 81], [.98, 77], [1.16, 74], [1.36, 77],
+  [1.61, 76], [1.84, 79], [2.09, 83], [2.38, 86],
+] as const;
+const RESULT_NOTES = [
+  [0, 79], [.1, 84], [.21, 88], [.33, 91], [.48, 84], [.48, 88], [.48, 96],
+] as const;
+const CONFETTI = [
+  [-138, -42, -125, "#bc4937"], [-115, 31, -72, "#dbaa4c"], [-90, -46, 90, "#76a073"],
+  [-62, 42, 140, "#bc4937"], [-32, -45, -100, "#e0b151"], [20, 43, 92, "#dbaa4c"],
+  [49, -41, 110, "#bc4937"], [72, 42, -134, "#76a073"], [106, -46, 96, "#dbaa4c"],
+  [130, 34, 128, "#bc4937"], [146, -30, -98, "#76a073"],
+] as const;
 
 type Mode = "demo" | "live";
 type Profile = { name: string; nickname?: string; photo: string };
@@ -22,6 +36,42 @@ type RevealResult = { person: Profile; candidates?: Profile[]; canSave: boolean;
 type RevealAttempt = RevealResult & { code: string };
 type RevealReel = { attempt: RevealAttempt; frames: Profile[] };
 type SavedCalendar = { days: readonly string[]; download: "ready" | "loading" | "failed" };
+type RevealAudio = { context: AudioContext; bus: GainNode | null };
+
+function playBells(audio: RevealAudio | null, notes: readonly (readonly [number, number])[], decay: number) {
+  if (!audio || audio.context.state === "closed") return;
+
+  try {
+    const { context } = audio;
+    audio.bus?.disconnect();
+    const bus = context.createGain();
+    bus.gain.value = .26;
+    bus.connect(context.destination);
+    audio.bus = bus;
+    const start = context.currentTime + .02;
+
+    for (const [offset, pitch] of notes) {
+      const time = start + offset;
+      const oscillator = context.createOscillator();
+      const envelope = context.createGain();
+      oscillator.type = "triangle";
+      oscillator.frequency.value = 440 * 2 ** ((pitch - 69) / 12);
+      envelope.gain.setValueAtTime(.0001, time);
+      envelope.gain.exponentialRampToValueAtTime(.12, time + .012);
+      envelope.gain.exponentialRampToValueAtTime(.0001, time + decay);
+      oscillator.connect(envelope);
+      envelope.connect(bus);
+      oscillator.onended = () => {
+        oscillator.disconnect();
+        envelope.disconnect();
+      };
+      oscillator.start(time);
+      oscillator.stop(time + decay);
+    }
+  } catch {
+    // The reveal can continue when audio is unavailable.
+  }
+}
 
 async function post<T>(endpoint: string, payload: object, signal?: AbortSignal): Promise<T> {
   const response = await fetch(apiUrl(endpoint), {
@@ -95,7 +145,7 @@ function rouletteFrames(result: RevealResult): Profile[] {
 
 function elapsedForFrame(index: number, count: number) {
   const progress = index / count;
-  return REVEAL_DURATION * (0.57 * progress + 0.43 * progress ** 3);
+  return REVEAL_DURATION * (0.42 * progress + 0.58 * progress ** 3);
 }
 
 function Roulette({ reel, onFinish }: { reel: RevealReel; onFinish: (attempt: RevealAttempt) => void }) {
@@ -142,16 +192,30 @@ function Roulette({ reel, onFinish }: { reel: RevealReel; onFinish: (attempt: Re
     <div className="as-reel">
       <p className="as-reel-label" role="status"><Sparkles size={16} aria-hidden="true" /> Girando a roleta…</p>
       <div className="as-reel-window" aria-hidden="true">
-        <div className="as-reel-frame" key={frameIndex}>
-          <ProfilePhoto person={person} />
-          <div>
-            <strong>{person.name}</strong>
-            {person.nickname && <span className="as-person-nickname">“{person.nickname}”</span>}
+        <div className="as-reel-peek">{reel.frames[frameIndex - 1]?.name ?? "⋯"}</div>
+        <div className="as-reel-lane">
+          <div className="as-reel-frame" key={frameIndex}>
+            <ProfilePhoto person={person} />
+            <div>
+              <strong>{person.name}</strong>
+              {person.nickname && <span className="as-person-nickname">“{person.nickname}”</span>}
+            </div>
           </div>
         </div>
+        <div className="as-reel-peek">{reel.frames[frameIndex + 1]?.name ?? "⋯"}</div>
       </div>
       <div className="as-reel-progress" aria-hidden="true"><span style={{ animationDuration: `${REVEAL_DURATION}ms` }} /></div>
     </div>
+  );
+}
+
+function RevealConfetti() {
+  return (
+    <span className="as-confetti" aria-hidden="true">
+      {CONFETTI.map(([x, y, spin, color]) => (
+        <i key={x} style={{ "--as-confetti-x": `${x}px`, "--as-confetti-y": `${y}px`, "--as-confetti-spin": `${spin}deg`, backgroundColor: color } as CSSProperties} />
+      ))}
+    </span>
   );
 }
 
@@ -163,6 +227,7 @@ export default function Home() {
   const [selected, setSelected] = useState<string[]>([]);
   const [month, setMonth] = useState(0);
   const [loadingReveal, setLoadingReveal] = useState(false);
+  const [soundOn, setSoundOn] = useState(true);
   const [saving, setSaving] = useState(false);
   const [revealError, setRevealError] = useState("");
   const [saveError, setSaveError] = useState("");
@@ -171,6 +236,13 @@ export default function Home() {
   const revealOutput = useRef<HTMLDivElement>(null);
   const revealRequest = useRef<AbortController | null>(null);
   const downloadRequest = useRef<AbortController | null>(null);
+  const revealAudio = useRef<RevealAudio | null>(null);
+
+  const stopRevealAudio = useCallback(() => {
+    const audio = revealAudio.current;
+    revealAudio.current = null;
+    if (audio && audio.context.state !== "closed") void audio.context.close().catch(() => {});
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -180,12 +252,15 @@ export default function Home() {
         if (!controller.signal.aborted && (event?.mode === "demo" || event?.mode === "live")) setMode(event.mode);
       })
       .catch(() => {});
+    window.addEventListener("pagehide", stopRevealAudio);
     return () => {
       controller.abort();
       revealRequest.current?.abort();
       downloadRequest.current?.abort();
+      window.removeEventListener("pagehide", stopRevealAudio);
+      stopRevealAudio();
     };
-  }, []);
+  }, [stopRevealAudio]);
 
   useEffect(() => {
     if (revealed) revealOutput.current?.focus({ preventScroll: true });
@@ -198,12 +273,14 @@ export default function Home() {
   }, []);
 
   const completeReveal = useCallback((attempt: RevealAttempt) => {
+    if (attempt.canSave) playBells(revealAudio.current, RESULT_NOTES, .33);
+    else stopRevealAudio();
     setSelected(attempt.mode === "demo" && attempt.canSave && attempt.code === DEMO_CODE ? demoDays() : attempt.days);
     setRevealed(attempt);
     setReel(null);
     clearSavedCalendar();
     setSaveError("");
-  }, [clearSavedCalendar]);
+  }, [clearSavedCalendar, stopRevealAudio]);
 
   async function reveal(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -212,6 +289,16 @@ export default function Home() {
     revealRequest.current = request;
     setRevealError("");
     setLoadingReveal(true);
+
+    if (soundOn) {
+      try {
+        const context = new AudioContext();
+        revealAudio.current = { context, bus: null };
+        void context.resume().catch(() => {});
+      } catch {
+        // Audio is optional on browsers that do not support it.
+      }
+    }
 
     try {
       const result = await post<RevealResult>("/api/reveal", { code }, request.signal);
@@ -224,11 +311,13 @@ export default function Home() {
         for (const photo of new Set(frames.map((person) => person.photo))) {
           if (photo) new Image().src = profilePhotoUrl(photo);
         }
+        playBells(revealAudio.current, REEL_NOTES, .23);
         setReel({ attempt, frames });
       } else {
         completeReveal(attempt);
       }
     } catch (error) {
+      stopRevealAudio();
       if (!request.signal.aborted) {
         setRevealError(error instanceof Error ? error.message : "Não conseguimos abrir a revelação. Tente novamente.");
       }
@@ -239,6 +328,7 @@ export default function Home() {
   }
 
   function resetReveal() {
+    stopRevealAudio();
     setRevealed(null);
     setCode("");
     setSelected([]);
@@ -246,6 +336,11 @@ export default function Home() {
     setSaveError("");
     setMonth(0);
     requestAnimationFrame(() => codeInput.current?.focus());
+  }
+
+  function toggleSound() {
+    if (soundOn) stopRevealAudio();
+    setSoundOn(!soundOn);
   }
 
   function toggleDay(date: string) {
@@ -340,10 +435,37 @@ export default function Home() {
           <img className="as-gifts" src={assetUrl("/presentes.svg")} alt="" aria-hidden="true" width={520} height={365} />
         </section>
 
+        <section className="as-guide" aria-labelledby="as-guide-heading">
+          <div className="as-guide-header">
+            <h2 id="as-guide-heading">Como participar</h2>
+            <a href="#as-reveal-heading">Começar <ArrowRight size={16} aria-hidden="true" /></a>
+          </div>
+          <ol>
+            <li>
+              <span className="as-guide-icon"><KeyRound size={20} aria-hidden="true" /></span>
+              <div><h3>Use seu código</h3><p>Digite o código individual que você recebeu do organizador.</p></div>
+            </li>
+            <li>
+              <span className="as-guide-icon"><Gift size={20} aria-hidden="true" /></span>
+              <div><h3>Abra sua revelação</h3><p>A roleta mostra quem você tirou. Guarde o nome em segredo.</p></div>
+            </li>
+            <li>
+              <span className="as-guide-icon"><CalendarDays size={20} aria-hidden="true" /></span>
+              <div><h3>Marque e salve suas datas</h3><p>Em novembro e dezembro, marque os dias em que você não pode participar. Salve as datas e baixe o PDF.</p></div>
+            </li>
+          </ol>
+        </section>
+
         <div className="as-workflow">
           <section className="as-card as-reveal-card" aria-labelledby="as-reveal-heading">
-            <div className="as-step"><span>01</span> A REVELAÇÃO</div>
-            <h2 id="as-reveal-heading">Quem você tirou?</h2>
+            <div className="as-reveal-top">
+              <div className="as-step"><span>01</span> A REVELAÇÃO</div>
+              <button className="as-sound-toggle" type="button" aria-label="Som da revelação" aria-pressed={soundOn} onClick={toggleSound}>
+                {soundOn ? <Volume2 size={16} aria-hidden="true" /> : <VolumeX size={16} aria-hidden="true" />}
+                {soundOn ? "Som ligado" : "Som desligado"}
+              </button>
+            </div>
+            <h2 id="as-reveal-heading" tabIndex={-1}>Quem você tirou?</h2>
             {revealed ? (
               <div className="as-reveal-result">
                 <div
@@ -353,9 +475,10 @@ export default function Home() {
                   tabIndex={-1}
                   aria-labelledby="as-result-label as-result-name"
                 >
+                  {revealed.canSave && <RevealConfetti />}
                   {revealed.canSave && <ProfilePhoto person={revealed.person} />}
                   <div>
-                    <p id="as-result-label">{revealed.canSave ? "Seu amigo secreto é" : "Código incorreto"}</p>
+                    <p id="as-result-label">{revealed.canSave && <Sparkles size={14} aria-hidden="true" />}{revealed.canSave ? "Seu amigo secreto é" : "Código incorreto"}</p>
                     <h3 id="as-result-name">{revealed.person.name}</h3>
                     {revealed.person.nickname && <span className="as-person-nickname">“{revealed.person.nickname}”</span>}
                   </div>
