@@ -1,11 +1,13 @@
 "use client";
 
-import { ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Download, FlaskConical, Gift, KeyRound, LockKeyhole, LogOut, Sparkles, UserRound, Volume2, VolumeX } from "lucide-react";
+import { ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Download, FlaskConical, Gift, KeyRound, LockKeyhole, LogOut, Sparkles, UserRound, UsersRound, Volume2, VolumeX } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { apiUrl, assetUrl, pageUrl } from "../lib/frontend-paths";
 import type { SteamGame } from "../lib/steam-games";
 import ParticipantProfile, { GameTiles, SteamDirectory, type Participant, type ParticipantDraft, type SteamFriend } from "./participant-profile";
 import { playAdvancementAudio, playRollingAudio, prepareRevealAudio, ProfilePhoto, profilePhotoUrl, REDUCED_MOTION, RevealConfetti, Roulette, rouletteFrames, type Profile, type RevealAudio } from "./reveal-effects";
+import MemberProfiles from "./member-profiles";
+import ThemeToggle from "./theme-toggle";
 
 const YEAR = 2026;
 const MONTHS = [
@@ -16,6 +18,7 @@ const WEEKDAYS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 const DEMO_CODE = "482731";
 const DEMO_AVAILABILITY = `amigo-secreto-${YEAR}-demo-days`;
 const BROWSER_SESSION = `amigo-secreto-${YEAR}-participant-session`;
+const PORTFOLIO_URL = "https://kuromorioficial.github.io/KuromoriOficial/";
 const DATE_LABEL = new Intl.DateTimeFormat("pt-BR", { dateStyle: "full" });
 
 type Mode = "demo" | "live";
@@ -296,6 +299,16 @@ export default function Home() {
     resetReveal();
   }, [resetReveal]);
 
+  const expireBrowserSession = useCallback((token: string) => {
+    if (sessionKey(browserSession.current) !== token) return false;
+    if (sessionKey(readStoredSession()) === token) writeStoredSession(null);
+    browserSession.current = null;
+    clearAccount();
+    setLoginError("Sua sessão expirou. Entre de novo com o código de acesso.");
+    requestAnimationFrame(() => accessField.current?.focus());
+    return true;
+  }, [clearAccount]);
+
   const restoreSession = useCallback(async (stored: StoredSession | null) => {
     browserSession.current = stored;
     if (!stored) {
@@ -532,14 +545,8 @@ export default function Home() {
   }
 
   function handleExpiredSession(error: unknown, auth: SessionAuth) {
-    if (!(error instanceof RequestError) || error.status !== 401 || !("sessionToken" in auth) ||
-      sessionKey(browserSession.current) !== auth.sessionToken) return false;
-    if (sessionKey(readStoredSession()) === auth.sessionToken) writeStoredSession(null);
-    browserSession.current = null;
-    clearAccount();
-    setLoginError("Sua sessão expirou. Entre de novo com o código de acesso.");
-    requestAnimationFrame(() => accessField.current?.focus());
-    return true;
+    return error instanceof RequestError && error.status === 401 && "sessionToken" in auth &&
+      expireBrowserSession(auth.sessionToken);
   }
 
   function toggleSound() {
@@ -631,11 +638,14 @@ export default function Home() {
           <span className="as-brand-icon"><Gift size={23} strokeWidth={1.7} aria-hidden="true" /></span>
           <span>Amigo Secreto<small>EDIÇÃO {YEAR}</small></span>
         </a>
-        <a className="as-organizer" href={pageUrl("/organizar")}>
-          <KeyRound size={16} strokeWidth={1.75} aria-hidden="true" />
-          <span><span className="as-organizer-prefix">Área do </span>organizador</span>
-          <ArrowUpRight className="as-organizer-arrow" size={14} aria-hidden="true" />
-        </a>
+        <div className="as-header-actions">
+          <ThemeToggle />
+          <a className="as-organizer" href={pageUrl("/organizar")}>
+            <KeyRound size={16} strokeWidth={1.75} aria-hidden="true" />
+            <span><span className="as-organizer-prefix">Área do </span>organizador</span>
+            <ArrowUpRight className="as-organizer-arrow" size={14} aria-hidden="true" />
+          </a>
+        </div>
       </header>
 
       <main className="as-shell">
@@ -717,6 +727,9 @@ export default function Home() {
                 <div><span>{account.mode === "demo" ? "Conta de demonstração" : "Sua conta"}</span><strong>{account.participant.name}{account.participant.nickname ? ` · ${account.participant.nickname}` : ""}</strong></div>
               </div>
               <div className="as-account-actions">
+                {"sessionToken" in account.auth && (
+                  <a className="as-account-button" href="#as-members"><UsersRound size={15} aria-hidden="true" /> Perfis do grupo</a>
+                )}
                 {account.profileComplete && !showProfile && (
                   <button type="button" className="as-account-button" disabled={saving || loadingReveal || Boolean(reel)} onClick={() => {
                     setEditingProfile(true);
@@ -886,11 +899,17 @@ export default function Home() {
                 {calendarEditable && <SteamDirectory friends={revealed.steamFriends ?? []} test={testResult} />}
               </>
             )}
+            {"sessionToken" in account.auth && (
+              <MemberProfiles key={account.auth.sessionToken} sessionToken={account.auth.sessionToken} onExpired={expireBrowserSession} />
+            )}
           </>
         )}
       </main>
 
-      <footer className="as-shell as-footer"><Gift size={16} strokeWidth={1.7} aria-hidden="true" /> <span>Amigo Secreto {YEAR}</span> <span aria-hidden="true">·</span> <span>Novembro e dezembro</span></footer>
+      <footer className="as-shell as-footer">
+        <span className="as-footer-event"><Gift size={16} strokeWidth={1.7} aria-hidden="true" /> <span>Amigo Secreto {YEAR}</span> <span aria-hidden="true">·</span> <span>Novembro e dezembro</span></span>
+        <a className="as-footer-portfolio" href={PORTFOLIO_URL} target="_blank" rel="noopener noreferrer">Portfólio do André Toshiro <ArrowUpRight size={15} aria-hidden="true" /></a>
+      </footer>
     </div>
   );
 }

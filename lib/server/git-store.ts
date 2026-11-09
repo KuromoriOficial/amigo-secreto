@@ -46,12 +46,30 @@ export type StoredEvent = {
   participants: StoredParticipant[];
 };
 
-type Configuration = { repositoryUrl: string; token: string; branch: string };
-type Snapshot = { sha?: string; event: StoredEvent };
+export type StoredMemberComment = { id: string; participantId: string; authorId: string; text: string; createdAt: string };
+type MemberComments = { version: 1; comments: StoredMemberComment[] };
 
-const eventFile = "amigo-secreto-2026.json";
+type Configuration = { repositoryUrl: string; token: string; branch: string };
+type DataFile<T> = { name: string; commitMessage: string; parse: (encoded: string) => T; empty: () => T };
+type Snapshot<T> = { sha?: string; value: T };
+
 const maxFileBytes = 4_000_000;
 const maxWriteAttempts = 4;
+export const MEMBER_COMMENT_LIMIT = 240;
+
+const eventFile: DataFile<StoredEvent> = {
+  name: "amigo-secreto-2026.json",
+  commitMessage: "Atualiza os dados do amigo secreto de 2026",
+  parse: parseEvent,
+  empty: () => ({ version: 1, drawn: false, participants: [] }),
+};
+
+const commentsFile: DataFile<MemberComments> = {
+  name: "amigo-secreto-2026-comentarios.json",
+  commitMessage: "Registra comentários de participantes do amigo secreto de 2026",
+  parse: parseMemberComments,
+  empty: () => ({ version: 1, comments: [] }),
+};
 
 export function hasGitStorage() {
   return Boolean(env.GITHUB_DATA_REPOSITORY?.trim() && env.GITHUB_DATA_TOKEN?.trim());
@@ -190,14 +208,13 @@ function isDrawId(value: unknown): value is string | undefined {
   return value === undefined || (typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value));
 }
 
+function parseJson(encoded: string): unknown {
+  return JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+}
+
 function parseEvent(encoded: string): StoredEvent {
   let value: unknown;
-  try {
-    value = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
-  } catch {
-    throw invalidData();
-  }
-
+  try { value = parseJson(encoded); } catch { throw invalidData(); }
   if (!isRecord(value) || value.version !== 1 || typeof value.drawn !== "boolean" ||
     !isStoredDrawStatus(value.drawStatus, value.drawn) || !isDrawId(value.drawId) ||
     !Array.isArray(value.participants) || !value.participants.every(isParticipant)) {
@@ -206,9 +223,27 @@ function parseEvent(encoded: string): StoredEvent {
   return { version: 1, drawn: value.drawn, drawStatus: value.drawStatus, drawId: value.drawId, participants: value.participants };
 }
 
-async function readSnapshot(config: Configuration): Promise<Snapshot> {
+function isMemberComment(value: unknown): value is StoredMemberComment {
+  return isRecord(value) && typeof value.id === "string" && value.id.length === 36 &&
+    typeof value.participantId === "string" && value.participantId.length > 0 &&
+    typeof value.authorId === "string" && value.authorId.length > 0 &&
+    typeof value.text === "string" && !!value.text.trim() && [...value.text].length <= MEMBER_COMMENT_LIMIT &&
+    typeof value.createdAt === "string" && Number.isFinite(Date.parse(value.createdAt));
+}
+
+function parseMemberComments(encoded: string): MemberComments {
+  const invalid = () => new ApiError(503, "O arquivo de comentários do GitHub é inválido.");
+  let value: unknown;
+  try { value = parseJson(encoded); } catch { throw invalid(); }
+  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.comments) || !value.comments.every(isMemberComment)) {
+    throw invalid();
+  }
+  return { version: 1, comments: value.comments };
+}
+
+async function readSnapshot<T>(config: Configuration, dataFile: DataFile<T>): Promise<Snapshot<T>> {
   const branch = encodeURIComponent(config.branch);
-  const response = await github(config, `/contents/${eventFile}?ref=${branch}`);
+  const response = await github(config, `/contents/${dataFile.name}?ref=${branch}`);
 
   if (response.status === 404) {
     await discardBody(response);
@@ -216,7 +251,7 @@ async function readSnapshot(config: Configuration): Promise<Snapshot> {
     const targetBranch = await github(config, `/branches/${branch}`);
     if (!targetBranch.ok) return githubError(targetBranch);
     await discardBody(targetBranch);
-    return { event: { version: 1, drawn: false, participants: [] } };
+    return { value: dataFile.empty() };
   }
 
   const file = await githubObject(response);
@@ -231,23 +266,23 @@ async function readSnapshot(config: Configuration): Promise<Snapshot> {
     ? await githubObject(await github(config, `/git/blobs/${file.sha}`))
     : file;
   if (content.encoding !== "base64" || typeof content.content !== "string") throw invalidData();
-  return { sha: file.sha, event: parseEvent(content.content) };
+  return { sha: file.sha, value: dataFile.parse(content.content) };
 }
 
-export async function readEvent() {
+async function readFile<T>(dataFile: DataFile<T>) {
   const config = configuration();
   await requirePrivateRepository(config);
-  return (await readSnapshot(config)).event;
+  return (await readSnapshot(config, dataFile)).value;
 }
 
-export async function updateEvent(change: (current: StoredEvent) => StoredEvent | Promise<StoredEvent>) {
+async function updateFile<T>(dataFile: DataFile<T>, change: (current: T) => T | Promise<T>) {
   const config = configuration();
   await requirePrivateRepository(config);
-  let current = await readSnapshot(config);
+  let current = await readSnapshot(config, dataFile);
 
   for (let attempt = 0; attempt < maxWriteAttempts; attempt += 1) {
-    const before = JSON.stringify(current.event);
-    const updated = await change(current.event);
+    const before = JSON.stringify(current.value);
+    const updated = await change(current.value);
     const after = JSON.stringify(updated);
     if (current.sha && after === before) return updated;
 
@@ -256,8 +291,8 @@ export async function updateEvent(change: (current: StoredEvent) => StoredEvent 
       throw new ApiError(413, "Os dados do sorteio ultrapassaram o limite de tamanho.");
     }
 
-    const response = await github(config, `/contents/${eventFile}`, "PUT", JSON.stringify({
-      message: "Atualiza os dados do amigo secreto de 2026",
+    const response = await github(config, `/contents/${dataFile.name}`, "PUT", JSON.stringify({
+      message: dataFile.commitMessage,
       branch: config.branch,
       sha: current.sha,
       content: bytes.toString("base64"),
@@ -275,7 +310,7 @@ export async function updateEvent(change: (current: StoredEvent) => StoredEvent 
     const delay = 150 * 2 ** attempt + Math.floor(Math.random() * 150);
     await new Promise<void>((resolve) => setTimeout(resolve, delay));
     await requirePrivateRepository(config);
-    const latest = await readSnapshot(config);
+    const latest = await readSnapshot(config, dataFile);
     // A 422 with an unchanged SHA indicates validation or throttling, not a race.
     if (response.status === 422 && latest.sha === current.sha) {
       throw new ApiError(503, "O GitHub recusou a gravação dos dados. Tente novamente em instantes.");
@@ -284,4 +319,26 @@ export async function updateEvent(change: (current: StoredEvent) => StoredEvent 
   }
 
   throw new ApiError(409, "Outra resposta chegou ao mesmo tempo. Tente salvar novamente.");
+}
+
+export function readEvent() {
+  return readFile(eventFile);
+}
+
+export function updateEvent(change: (current: StoredEvent) => StoredEvent | Promise<StoredEvent>) {
+  return updateFile(eventFile, change);
+}
+
+export async function readMemberComments() {
+  return (await readFile(commentsFile)).comments;
+}
+
+export async function addMemberComment(comment: StoredMemberComment) {
+  await updateFile(commentsFile, (current) => {
+    if (current.comments.some(({ id }) => id === comment.id)) return current;
+    if (current.comments.filter(({ participantId }) => participantId === comment.participantId).length >= 50) {
+      throw new ApiError(409, "Este perfil já recebeu o máximo de 50 comentários.");
+    }
+    return { ...current, comments: [...current.comments, comment] };
+  });
 }

@@ -238,6 +238,18 @@ export async function resumeParticipant(input: unknown) {
   return participantSession(authorizedParticipant(event, auth), "live", event);
 }
 
+export async function memberDirectory(input: unknown) {
+  const auth = await sessionAuthorization(input);
+  const event = await eventForParticipants();
+  const viewer = authorizedParticipant(event, auth);
+  const members = (event?.participants ?? []).map((person) => ({
+    id: person.id,
+    ...publicProfile(person),
+    games: person.games ?? [],
+  }));
+  return { members, viewerId: viewer.id };
+}
+
 export async function logoutParticipant(input: unknown) {
   if (!isBrowserSessionToken(input) || !hasGitStorage()) return { ok: true };
   const fingerprint = await browserSessionFingerprint(input);

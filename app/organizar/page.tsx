@@ -4,6 +4,7 @@ import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from "r
 import { apiUrl, assetUrl, isStaticFrontend, pageUrl } from "../../lib/frontend-paths";
 import { createOfflineDraw, type OfflineDraw } from "../../lib/offline-crypto";
 import { isSteamFriendCode, type SteamGame } from "../../lib/steam-games";
+import ThemeToggle from "../theme-toggle";
 import { SteamPicker } from "./steam-picker";
 import styles from "./organizar.module.css";
 
@@ -598,7 +599,10 @@ export default function OrganizerPage() {
           <span className={styles.brandIcon}><Icon name="gift" /></span>
           <span>Amigo Secreto <small>2026</small></span>
         </a>
-        {event && key && <button type="button" className={styles.textButton} onClick={leave} disabled={busy || readingDraw}>Sair do painel</button>}
+        <div className={styles.topbarActions}>
+          {event && key && <button type="button" className={styles.textButton} onClick={leave} disabled={busy || readingDraw}>Sair do painel</button>}
+          <ThemeToggle />
+        </div>
       </header>
 
       {!event ? (
