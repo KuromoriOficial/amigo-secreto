@@ -26,12 +26,11 @@ type SessionAuth = { sessionToken: string } | { accessCode: typeof DEMO_CODE };
 type StoredSession = { token: string } | { demo: true; profile?: ParticipantDraft; opened?: boolean };
 type ParticipantResponse = PublicEvent & {
   participant: Participant;
-  revealed: boolean;
   profileComplete: boolean;
   sessionToken?: string;
   result?: RevealResult;
 };
-type ParticipantSession = Omit<ParticipantResponse, "sessionToken" | "result"> & { auth: SessionAuth };
+type ParticipantSession = Pick<ParticipantResponse, "participant" | "mode" | "profileComplete"> & { auth: SessionAuth };
 type RevealResult = PublicEvent & { person: Profile & { games?: SteamGame[] }; candidates?: Profile[]; steamFriends?: SteamFriend[]; canSave: boolean; days: string[]; availabilitySaved?: boolean };
 type RevealAttempt = RevealResult & { auth: SessionAuth; code?: string; restored?: boolean };
 type RevealReel = { attempt: RevealAttempt; frames: Profile[] };
@@ -214,9 +213,6 @@ export default function Home() {
     setSeenError("");
     try {
       await post<{ ok: true }>("/api/participant", { action: "seen", ...attempt.auth, code: attempt.code, drawId: attempt.drawId }, request.signal);
-      if (!request.signal.aborted) {
-        setAccount((current) => current?.auth === attempt.auth ? { ...current, revealed: true } : current);
-      }
     } catch {
       if (!request.signal.aborted) setSeenError("Não foi possível confirmar a visualização. Seu resultado continua disponível.");
     } finally {
@@ -227,7 +223,9 @@ export default function Home() {
   useEffect(() => {
     if (!revealed || revealed.restored) return;
     revealOutput.current?.focus({ preventScroll: true });
-    if (revealed.canSave) void registerSeen(revealed);
+    if (!revealed.canSave) return;
+    const timer = window.setTimeout(() => void registerSeen(revealed), 0);
+    return () => window.clearTimeout(timer);
   }, [revealed, registerSeen]);
 
   const clearSavedCalendar = useCallback(() => {
@@ -275,11 +273,11 @@ export default function Home() {
   }, []);
 
   const applySession = useCallback((response: ParticipantResponse, auth: SessionAuth) => {
-    const { sessionToken: _token, result, ...profile } = response;
-    if (profile.drawStatus) setMode(profile.drawStatus === "draft" ? "demo" : "live");
-    rememberDrawStatus(profile.drawStatus);
-    setAccount({ ...profile, auth });
-    if (profile.profileComplete && result?.canSave) openSavedResult(result, auth);
+    const { drawStatus, mode, participant, profileComplete, result } = response;
+    if (drawStatus) setMode(drawStatus === "draft" ? "demo" : "live");
+    rememberDrawStatus(drawStatus);
+    setAccount({ participant, mode, profileComplete, auth });
+    if (profileComplete && result?.canSave) openSavedResult(result, auth);
   }, [openSavedResult, rememberDrawStatus]);
 
   const clearAccount = useCallback(() => {
@@ -358,10 +356,11 @@ export default function Home() {
       }
     }
 
-    void restoreSession(readStoredSession());
+    const timer = window.setTimeout(() => void restoreSession(readStoredSession()), 0);
     window.addEventListener("storage", syncBrowserSession);
     window.addEventListener("pageshow", syncAfterBackNavigation);
     return () => {
+      window.clearTimeout(timer);
       window.removeEventListener("storage", syncBrowserSession);
       window.removeEventListener("pageshow", syncAfterBackNavigation);
     };
@@ -461,8 +460,8 @@ export default function Home() {
     if (signal.aborted) return;
     rememberDrawStatus(result.drawStatus);
     clearChangedRound(result);
-    const { result: savedResult, sessionToken: _token, ...updatedProfile } = result;
-    setAccount((current) => current?.auth === auth ? { ...updatedProfile, auth } : current);
+    const { result: savedResult, participant, mode, profileComplete } = result;
+    setAccount((current) => current?.auth === auth ? { participant, mode, profileComplete, auth } : current);
     if (savedResult?.canSave && !openAttempt.current?.canSave) openSavedResult(savedResult, auth);
     const stored = browserSession.current;
     if (result.mode === "demo" && stored && "demo" in stored) {
