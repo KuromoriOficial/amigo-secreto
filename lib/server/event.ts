@@ -4,7 +4,7 @@ import { steamGameCover, type SteamGame } from "../steam-games";
 import { hasGitStorage, isSealedAssignment, readEvent, updateEvent, type DrawStatus, type StoredEvent, type StoredParticipant } from "./git-store";
 import { ApiError } from "./http";
 import { completeProfile, parseName, parseNickname, parsePhoto, updateProfile, type ProfileFields } from "./profile";
-import { ACCESS_CODE_LENGTH, deriveAccessLookup, openVaultCode, sealVaultCode } from "./vault";
+import { ACCESS_CODE_LENGTH, browserSessionFingerprint, createBrowserSessionToken, deriveAccessLookup, isBrowserSessionToken, openVaultCode, sealVaultCode } from "./vault";
 
 declare global {
   namespace Cloudflare {
@@ -42,9 +42,14 @@ const dates = Array.from({ length: 61 }, (_, offset) =>
 const eventDates = new Set(dates);
 const legacyCodeLength = 12;
 const participantIdPattern = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+const sessionLifetime = 90 * 24 * 60 * 60 * 1000;
+const maxBrowserSessions = 8;
 
 type Mode = "demo" | "live";
 type Profile = { name: string; nickname?: string; photo: string };
+type AuthorizationInput = { accessCode?: unknown; sessionToken?: unknown };
+type RevealInput = AuthorizationInput & { code?: unknown; drawId?: unknown };
+type LiveAuthorization = { kind: "access"; lookup: string } | { kind: "session"; fingerprint: string };
 
 function publicProfile({ name, nickname, photo }: Profile): Profile {
   return { name, nickname, photo };
@@ -111,19 +116,43 @@ function isDemoAccess(event: StoredEvent | null, code: string) {
   return statusOf(event) === "draft" && code === demoCode;
 }
 
-function authorizedParticipant(event: StoredEvent | null, lookup: string) {
-  const participant = event?.participants.find((person) => person.access?.lookup === lookup);
-  if (!participant) throw invalidAccess();
+function invalidSession() {
+  return new ApiError(401, "Sua sessão expirou. Entre novamente.");
+}
+
+async function sessionAuthorization(token: unknown): Promise<Extract<LiveAuthorization, { kind: "session" }>> {
+  if (!isBrowserSessionToken(token)) throw invalidSession();
+  return { kind: "session", fingerprint: await browserSessionFingerprint(token) };
+}
+
+async function authorization(input: AuthorizationInput): Promise<LiveAuthorization | { kind: "demo" }> {
+  if (input.sessionToken !== undefined) return sessionAuthorization(input.sessionToken);
+  const code = accessCode(input.accessCode);
+  return code === demoCode ? { kind: "demo" } : { kind: "access", lookup: await deriveAccessLookup(code) };
+}
+
+function authorizedParticipant(event: StoredEvent | null, auth: LiveAuthorization) {
+  const now = Date.now();
+  const participant = event?.participants.find((person) => {
+    if (!person.access) return false;
+    if (auth.kind === "access") return person.access.lookup === auth.lookup;
+    return person.browserSessions?.some((session) =>
+      session.fingerprint === auth.fingerprint && session.accessIv === person.access?.iv && session.expiresAt > now);
+  });
+  if (!participant) throw auth.kind === "session" ? invalidSession() : invalidAccess();
   return participant;
 }
 
-function participantSession(person: StoredParticipant, mode: Mode, event: StoredEvent | null) {
+async function participantSession(person: StoredParticipant, mode: Mode, event: StoredEvent | null) {
+  const profileComplete = completeProfile(person);
+  const recipient = event && profileComplete ? await verifiedRecipient(event, person) : undefined;
   return {
     participant: { ...publicProfile(person), id: person.id, steamCode: person.steamCode, games: person.games ?? [] },
     mode,
     ...roundFields(event),
-    profileComplete: completeProfile(person),
+    profileComplete,
     revealed: !!event?.drawn && !!person.revealedAt,
+    result: event && recipient ? liveReveal(event, person, recipient) : undefined,
   };
 }
 
@@ -152,46 +181,91 @@ async function matchingRecipient(event: StoredEvent, person: StoredParticipant, 
   return event.participants.find((candidate) => candidate.id === id && candidate.id !== person.id);
 }
 
+async function verifiedRecipient(event: StoredEvent, person: StoredParticipant) {
+  const { drawId } = roundFields(event);
+  if (!drawId || person.verifiedRevealRoundId !== drawId) return undefined;
+  const code = person.drawCode ? await openVaultCode("draw", person.id, person.drawCode) : person.code;
+  return code ? matchingRecipient(event, person, code) : undefined;
+}
+
+function liveReveal(event: StoredEvent, voter: StoredParticipant, recipient: StoredParticipant) {
+  return {
+    person: { ...publicProfile(recipient), games: recipient.games ?? [] },
+    steamFriends: event.participants.filter((person) => person.id !== voter.id).map(directoryEntry),
+    canSave: true,
+    days: voter.unavailableDays ?? [],
+    availabilitySaved: voter.unavailableDays !== null,
+    mode: "live" as const,
+    ...roundFields(event),
+  };
+}
+
 export async function publicEvent() {
   const event = await eventForParticipants();
   const round = roundFields(event);
   return { mode: round.drawStatus === "draft" ? "demo" : "live", ...round };
 }
 
-export async function loginParticipant(input: unknown) {
+export async function loginParticipant(input: unknown, remember: unknown) {
   const code = accessCode(input);
   const event = await eventForParticipants();
   if (isDemoAccess(event, code)) return participantSession(demoParticipant, "demo", event);
 
-  const lookup = await deriveAccessLookup(code);
-  const person = authorizedParticipant(event, lookup);
-  if (person.accessedAt) return participantSession(person, "live", event);
+  const auth = { kind: "access", lookup: await deriveAccessLookup(code) } as const;
+  const person = authorizedParticipant(event, auth);
+  if (person.accessedAt && remember !== true) return participantSession(person, "live", event);
 
-  const accessedAt = new Date().toISOString();
+  const token = remember === true ? createBrowserSessionToken() : undefined;
+  const fingerprint = token ? await browserSessionFingerprint(token) : undefined;
+  const now = Date.now();
+  const accessedAt = new Date(now).toISOString();
   const updated = await updateEvent((current) => {
-    const member = authorizedParticipant(current, lookup);
-    return member.accessedAt ? current : replaceParticipant(current, { ...member, accessedAt });
+    const member = authorizedParticipant(current, auth);
+    const next = { ...member, accessedAt: member.accessedAt ?? accessedAt };
+    if (fingerprint && member.access) {
+      const accessIv = member.access.iv;
+      const sessions = member.browserSessions?.filter((session) => session.expiresAt > now && session.accessIv === accessIv) ?? [];
+      next.browserSessions = [...sessions.slice(-(maxBrowserSessions - 1)), { fingerprint, accessIv, expiresAt: now + sessionLifetime }];
+    }
+    return replaceParticipant(current, next);
   });
-  return participantSession(authorizedParticipant(updated, lookup), "live", updated);
+  return { ...await participantSession(authorizedParticipant(updated, auth), "live", updated), sessionToken: token };
 }
 
-export async function saveParticipantProfile(input: unknown, fields: ProfileFields) {
-  const code = accessCode(input);
-  if (code === demoCode) {
+export async function resumeParticipant(input: unknown) {
+  const auth = await sessionAuthorization(input);
+  const event = await eventForParticipants();
+  return participantSession(authorizedParticipant(event, auth), "live", event);
+}
+
+export async function logoutParticipant(input: unknown) {
+  if (!isBrowserSessionToken(input) || !hasGitStorage()) return { ok: true };
+  const fingerprint = await browserSessionFingerprint(input);
+  await updateEvent((current) => {
+    const member = current.participants.find((person) => person.browserSessions?.some((session) => session.fingerprint === fingerprint));
+    if (!member) return current;
+    const remaining = member.browserSessions?.filter((session) => session.fingerprint !== fingerprint);
+    return replaceParticipant(current, { ...member, browserSessions: remaining?.length ? remaining : undefined });
+  });
+  return { ok: true };
+}
+
+export async function saveParticipantProfile(input: AuthorizationInput & ProfileFields) {
+  const auth = await authorization(input);
+  if (auth.kind === "demo") {
     const event = await eventForParticipants();
-    if (!isDemoAccess(event, code)) throw invalidAccess();
-    const updated = updateProfile(demoParticipant, fields);
+    if (!isDemoAccess(event, demoCode)) throw invalidAccess();
+    const updated = updateProfile(demoParticipant, input);
     requireCompleteProfile(updated);
     return participantSession(updated, "demo", event);
   }
 
-  const lookup = await deriveAccessLookup(code);
   const updated = await updateEvent((current) => {
-    const person = updateProfile(authorizedParticipant(current, lookup), fields);
+    const person = updateProfile(authorizedParticipant(current, auth), input);
     requireCompleteProfile(person);
     return replaceParticipant(current, person);
   });
-  return participantSession(authorizedParticipant(updated, lookup), "live", updated);
+  return participantSession(authorizedParticipant(updated, auth), "live", updated);
 }
 
 function incorrectReveal(mode: Mode, event: StoredEvent | null) {
@@ -201,16 +275,18 @@ function incorrectReveal(mode: Mode, event: StoredEvent | null) {
     steamFriends: [],
     canSave: false,
     days: [],
+    availabilitySaved: false,
     mode,
     ...roundFields(event),
   };
 }
 
-export async function reveal(accessInput: unknown, input: unknown) {
-  const access = accessCode(accessInput);
-  const code = numericCode(input);
+export async function reveal(input: RevealInput) {
+  const auth = await authorization(input);
+  const code = numericCode(input.code);
   const event = await eventForParticipants();
-  if (isDemoAccess(event, access)) {
+  if (auth.kind === "demo") {
+    if (!isDemoAccess(event, demoCode)) throw invalidAccess();
     if (code !== demoCode) return incorrectReveal("demo", event);
     return {
       person: { ...demoProfiles[0], games: demoGames },
@@ -218,60 +294,63 @@ export async function reveal(accessInput: unknown, input: unknown) {
       steamFriends: demoProfiles.filter((_, index) => index !== 1).map(({ name, nickname }, index) => ({ id: `demo-${index}`, name, nickname })),
       canSave: true,
       days: [],
+      availabilitySaved: false,
       mode: "demo" as const,
       ...roundFields(event),
     };
   }
 
-  const voter = authorizedParticipant(event, await deriveAccessLookup(access));
+  const voter = authorizedParticipant(event, auth);
   requireActiveDraw(event);
   requireCompleteProfile(voter);
   const recipient = await matchingRecipient(event, voter, code);
   if (!recipient) return incorrectReveal("live", event);
-  return {
-    person: { ...publicProfile(recipient), games: recipient.games ?? [] },
-    candidates: event.participants.map(publicProfile),
-    steamFriends: event.participants.filter((person) => person.id !== voter.id).map(directoryEntry),
-    canSave: true,
-    days: voter.unavailableDays ?? [],
-    mode: "live" as const,
-    ...roundFields(event),
-  };
+  return { ...liveReveal(event, voter, recipient), candidates: event.participants.map(publicProfile) };
 }
 
 async function updateAfterReveal(
-  accessInput: unknown,
-  codeInput: unknown,
-  change: (person: StoredParticipant) => StoredParticipant,
+  input: RevealInput,
+  change: (person: StoredParticipant, roundId: string, code: string | undefined) => StoredParticipant | Promise<StoredParticipant>,
+  allowRestored = false,
 ) {
-  const access = accessCode(accessInput);
-  const code = numericCode(codeInput);
+  const auth = await authorization(input);
+  const code = allowRestored && input.code === undefined ? undefined : numericCode(input.code);
   const wrongDrawCode = () => new ApiError(403, "Use o código do sorteio vinculado à sua conta.");
-  if (access === demoCode) {
-    if (!isDemoAccess(await eventForParticipants(), access)) throw invalidAccess();
+  if (auth.kind === "demo") {
+    if (!isDemoAccess(await eventForParticipants(), demoCode)) throw invalidAccess();
     if (code !== demoCode) throw wrongDrawCode();
     return { ok: true };
   }
+  if (code === undefined && auth.kind !== "session") throw wrongDrawCode();
 
-  const lookup = await deriveAccessLookup(access);
   await updateEvent(async (current) => {
-    const participant = authorizedParticipant(current, lookup);
+    const participant = authorizedParticipant(current, auth);
     requireActiveDraw(current);
+    const roundId = current.drawId ?? "legacy";
+    if ((input.drawId !== undefined || code === undefined) && input.drawId !== roundId) {
+      throw new ApiError(409, "O sorteio mudou. Abra o resultado da rodada atual antes de continuar.");
+    }
     requireCompleteProfile(participant);
-    if (!await matchingRecipient(current, participant, code)) throw wrongDrawCode();
-    return replaceParticipant(current, change(participant));
+    const recipient = code ? await matchingRecipient(current, participant, code) : await verifiedRecipient(current, participant);
+    if (!recipient) throw wrongDrawCode();
+    return replaceParticipant(current, await change(participant, roundId, code));
   });
   return { ok: true };
 }
 
-export function saveAvailability(accessInput: unknown, codeInput: unknown, daysInput: unknown) {
-  const days = unavailableDays(daysInput);
-  return updateAfterReveal(accessInput, codeInput, (person) => ({ ...person, unavailableDays: days }));
+export function saveAvailability(input: RevealInput & { days?: unknown }) {
+  const days = unavailableDays(input.days);
+  return updateAfterReveal(input, (person) => ({ ...person, unavailableDays: days }), true);
 }
 
-export function recordSeen(accessInput: unknown, codeInput: unknown) {
+export function recordSeen(input: RevealInput) {
   const revealedAt = new Date().toISOString();
-  return updateAfterReveal(accessInput, codeInput, (person) => ({ ...person, revealedAt: person.revealedAt ?? revealedAt }));
+  return updateAfterReveal(input, async (person, roundId, code) => ({
+    ...person,
+    revealedAt: person.revealedAt ?? revealedAt,
+    verifiedRevealRoundId: roundId,
+    drawCode: person.sealed && !person.drawCode && code ? await sealVaultCode("draw", person.id, code) : person.drawCode,
+  }));
 }
 
 export async function requireOrganizer(request: Request) {
@@ -493,11 +572,14 @@ export async function editParticipant(input: Record<string, unknown>) {
       throw new ApiError(400, "Já existe um participante com esse nome e apelido.");
     }
     const profile = updateProfile({ ...participant, name, nickname }, input);
+    const access = await editedAccess(current, participant, input.accessCode);
     return replaceParticipant(current, {
       ...profile,
       accessedAt: editedStatus(input.accessed, participant.accessedAt, now),
       revealedAt: editedStatus(input.revealed, participant.revealedAt, now),
-      access: await editedAccess(current, participant, input.accessCode),
+      verifiedRevealRoundId: input.revealed === false ? undefined : participant.verifiedRevealRoundId,
+      access,
+      browserSessions: access && access.iv === participant.access?.iv ? participant.browserSessions : undefined,
     });
   });
   return summarizeEvent(event);
@@ -608,6 +690,7 @@ export async function resetDraw() {
       recipientId: undefined,
       drawCode: undefined,
       revealedAt: undefined,
+      verifiedRevealRoundId: undefined,
       unavailableDays: null,
     }));
     return { version: 1, drawn: false, participants };

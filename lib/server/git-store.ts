@@ -24,13 +24,17 @@ export type StoredParticipant = {
   recipientId?: string;
   sealed?: SealedAssignment;
   access?: AccessCredential;
+  browserSessions?: BrowserSession[];
   drawCode?: VaultCode;
   accessedAt?: string;
   revealedAt?: string;
+  verifiedRevealRoundId?: string;
   steamCode?: string;
   games?: SteamGame[];
   unavailableDays: string[] | null;
 };
+
+export type BrowserSession = { fingerprint: string; accessIv: string; expiresAt: number };
 
 export type DrawStatus = "draft" | "test" | "definitive" | "cancelled";
 
@@ -140,6 +144,12 @@ function isAccessCredential(value: unknown): value is AccessCredential {
     isVaultCode(value, 48);
 }
 
+function isBrowserSession(value: unknown): value is BrowserSession {
+  return isRecord(value) && typeof value.fingerprint === "string" && /^[A-Za-z0-9_-]{43}$/.test(value.fingerprint) &&
+    typeof value.accessIv === "string" && /^[A-Za-z0-9_-]{16}$/.test(value.accessIv) &&
+    typeof value.expiresAt === "number" && Number.isSafeInteger(value.expiresAt) && value.expiresAt > 0;
+}
+
 async function githubObject(response: Response): Promise<Record<string, unknown>> {
   if (!response.ok) return githubError(response);
   const value: unknown = await response.json().catch(() => undefined);
@@ -161,9 +171,11 @@ function isParticipant(value: unknown): value is StoredParticipant {
     (value.recipientId === undefined || typeof value.recipientId === "string") &&
     (value.sealed === undefined || isSealedAssignment(value.sealed)) &&
     (value.access === undefined || isAccessCredential(value.access)) &&
+    (value.browserSessions === undefined || (Array.isArray(value.browserSessions) && value.browserSessions.every(isBrowserSession))) &&
     (value.drawCode === undefined || isVaultCode(value.drawCode, 62)) &&
     (value.accessedAt === undefined || typeof value.accessedAt === "string") &&
     (value.revealedAt === undefined || typeof value.revealedAt === "string") &&
+    (value.verifiedRevealRoundId === "legacy" || isDrawId(value.verifiedRevealRoundId)) &&
     (value.steamCode === undefined || isSteamFriendCode(value.steamCode)) &&
     (value.games === undefined || parseSteamGames(value.games) !== null) &&
     (value.unavailableDays === null || (Array.isArray(value.unavailableDays) &&

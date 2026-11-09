@@ -1,10 +1,11 @@
 "use client";
 
 import { ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Download, FlaskConical, Gift, KeyRound, LockKeyhole, LogOut, Sparkles, UserRound, Volume2, VolumeX } from "lucide-react";
-import { type CSSProperties, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { apiUrl, assetUrl, pageUrl } from "../lib/frontend-paths";
 import type { SteamGame } from "../lib/steam-games";
 import ParticipantProfile, { GameTiles, SteamDirectory, type Participant, type ParticipantDraft, type SteamFriend } from "./participant-profile";
+import { playAdvancementAudio, playRollingAudio, prepareRevealAudio, ProfilePhoto, profilePhotoUrl, REDUCED_MOTION, RevealConfetti, Roulette, rouletteFrames, type Profile, type RevealAudio } from "./reveal-effects";
 
 const YEAR = 2026;
 const MONTHS = [
@@ -14,82 +15,67 @@ const MONTHS = [
 const WEEKDAYS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 const DEMO_CODE = "482731";
 const DEMO_AVAILABILITY = `amigo-secreto-${YEAR}-demo-days`;
+const BROWSER_SESSION = `amigo-secreto-${YEAR}-participant-session`;
 const DATE_LABEL = new Intl.DateTimeFormat("pt-BR", { dateStyle: "full" });
-const REVEAL_DURATION = 2700;
-const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
-const REEL_NOTES = [
-  [0, 72], [.18, 76], [.36, 79], [.56, 84],
-  [.8, 81], [.98, 77], [1.16, 74], [1.36, 77],
-  [1.61, 76], [1.84, 79], [2.09, 83], [2.38, 86],
-] as const;
-const RESULT_NOTES = [
-  [0, 79], [.1, 84], [.21, 88], [.33, 91], [.48, 84], [.48, 88], [.48, 96],
-] as const;
-const CONFETTI = [
-  [-138, -42, -125, "#bc4937"], [-115, 31, -72, "#dbaa4c"], [-90, -46, 90, "#76a073"],
-  [-62, 42, 140, "#bc4937"], [-32, -45, -100, "#e0b151"], [20, 43, 92, "#dbaa4c"],
-  [49, -41, 110, "#bc4937"], [72, 42, -134, "#76a073"], [106, -46, 96, "#dbaa4c"],
-  [130, 34, 128, "#bc4937"], [146, -30, -98, "#76a073"],
-] as const;
 
 type Mode = "demo" | "live";
 type DrawStatus = "draft" | "test" | "definitive" | "cancelled";
 type Round = { drawStatus?: DrawStatus; drawId?: string };
 type PublicEvent = Round & { mode: Mode };
-type Profile = { name: string; nickname?: string; photo: string };
-type ParticipantResponse = PublicEvent & { participant: Participant; revealed: boolean; profileComplete: boolean };
-type ParticipantSession = ParticipantResponse & { accessCode: string };
-type RevealResult = PublicEvent & { person: Profile & { games?: SteamGame[] }; candidates?: Profile[]; steamFriends?: SteamFriend[]; canSave: boolean; days: string[] };
-type RevealAttempt = RevealResult & { code: string; accessCode: string };
+type SessionAuth = { sessionToken: string } | { accessCode: typeof DEMO_CODE };
+type StoredSession = { token: string } | { demo: true; profile?: ParticipantDraft; opened?: boolean };
+type ParticipantResponse = PublicEvent & {
+  participant: Participant;
+  revealed: boolean;
+  profileComplete: boolean;
+  sessionToken?: string;
+  result?: RevealResult;
+};
+type ParticipantSession = Omit<ParticipantResponse, "sessionToken" | "result"> & { auth: SessionAuth };
+type RevealResult = PublicEvent & { person: Profile & { games?: SteamGame[] }; candidates?: Profile[]; steamFriends?: SteamFriend[]; canSave: boolean; days: string[]; availabilitySaved?: boolean };
+type RevealAttempt = RevealResult & { auth: SessionAuth; code?: string; restored?: boolean };
 type RevealReel = { attempt: RevealAttempt; frames: Profile[] };
 type SavedCalendar = { days: readonly string[]; download: "ready" | "loading" | "failed" };
-type RevealAudio = { context: AudioContext; bus: GainNode | null };
 
-function playBells(audio: RevealAudio | null, notes: readonly (readonly [number, number])[], decay: number) {
-  if (!audio || audio.context.state === "closed") return;
-
-  try {
-    const { context } = audio;
-    audio.bus?.disconnect();
-    const bus = context.createGain();
-    bus.gain.value = .26;
-    bus.connect(context.destination);
-    audio.bus = bus;
-    const start = context.currentTime + .02;
-
-    for (const [offset, pitch] of notes) {
-      const time = start + offset;
-      const oscillator = context.createOscillator();
-      const envelope = context.createGain();
-      oscillator.type = "triangle";
-      oscillator.frequency.value = 440 * 2 ** ((pitch - 69) / 12);
-      envelope.gain.setValueAtTime(.0001, time);
-      envelope.gain.exponentialRampToValueAtTime(.12, time + .012);
-      envelope.gain.exponentialRampToValueAtTime(.0001, time + decay);
-      oscillator.connect(envelope);
-      envelope.connect(bus);
-      oscillator.onended = () => {
-        oscillator.disconnect();
-        envelope.disconnect();
-      };
-      oscillator.start(time);
-      oscillator.stop(time + decay);
-    }
-  } catch {
-    // The reveal can continue when audio is unavailable.
+class RequestError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
   }
 }
 
-async function post<T>(endpoint: string, payload: object, signal?: AbortSignal): Promise<T> {
+function readStoredSession(): StoredSession | null {
+  try {
+    const session = JSON.parse(localStorage.getItem(BROWSER_SESSION) ?? "null") as StoredSession | null;
+    if (session && typeof session === "object" && ("token" in session ? typeof session.token === "string" && session.token.length > 0 : session.demo === true)) return session;
+  } catch {
+    // Browser storage can be unavailable.
+  }
+  return null;
+}
+
+function writeStoredSession(session: StoredSession | null) {
+  try {
+    if (session) localStorage.setItem(BROWSER_SESSION, JSON.stringify(session));
+    else localStorage.removeItem(BROWSER_SESSION);
+  } catch {
+    // The current tab still works without browser storage.
+  }
+}
+
+function sessionKey(session: StoredSession | null) {
+  return session && ("token" in session ? session.token : "demo");
+}
+async function post<T>(endpoint: string, payload: object, signal?: AbortSignal, keepalive = false): Promise<T> {
   const response = await fetch(apiUrl(endpoint), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
     signal,
+    keepalive,
   });
   const data = await response.json().catch(() => null) as (T & { error?: string }) | null;
   if (!response.ok || !data) {
-    throw new Error(typeof data?.error === "string" ? data.error : "Não foi possível concluir. Tente de novo em instantes.");
+    throw new RequestError(response.status, typeof data?.error === "string" ? data.error : "Não foi possível concluir. Tente de novo em instantes.");
   }
   return data;
 }
@@ -123,21 +109,12 @@ function demoDays(): string[] {
   }
 }
 
-function profilePhotoUrl(photo: string) {
-  return photo.startsWith("/api/") ? apiUrl(photo) : assetUrl(photo);
-}
-
-function ProfilePhoto({ person }: { person: Profile }) {
-  const [failed, setFailed] = useState(false);
-  const initials = person.name.trim().split(/\s+/).slice(0, 2).map((word) => Array.from(word)[0]).join("");
-  const photo = profilePhotoUrl(person.photo);
-
-  return (
-    <div className="as-photo">
-      <span aria-hidden="true">{initials}</span>
-      {photo && !failed && <img src={photo} alt={`Foto de ${person.name}`} onError={() => setFailed(true)} />}
-    </div>
-  );
+function hasDemoCalendar() {
+  try {
+    return localStorage.getItem(DEMO_AVAILABILITY) !== null;
+  } catch {
+    return false;
+  }
 }
 
 function MemeFigure({ person }: { person: Profile }) {
@@ -151,105 +128,14 @@ function MemeFigure({ person }: { person: Profile }) {
   );
 }
 
-function rouletteFrames(result: RevealResult): Profile[] {
-  const deck = [...(result.candidates ?? [])];
-  const winner = deck.findIndex(({ name, nickname, photo }) => (
-    name === result.person.name && nickname === result.person.nickname && photo === result.person.photo
-  ));
-  if (winner !== -1) deck.splice(winner, 1);
-  if (!deck.length) return [];
-
-  for (let index = deck.length - 1; index > 0; index--) {
-    const other = Math.floor(Math.random() * (index + 1));
-    [deck[index], deck[other]] = [deck[other], deck[index]];
-  }
-
-  if (deck.length === 1) deck.push(result.person);
-  return Array.from({ length: Math.max(deck.length, 9) }, (_, index) => deck[index % deck.length]);
-}
-
-function elapsedForFrame(index: number, count: number) {
-  const progress = index / count;
-  return REVEAL_DURATION * (0.42 * progress + 0.58 * progress ** 3);
-}
-
-function Roulette({ reel, onFinish }: { reel: RevealReel; onFinish: (attempt: RevealAttempt) => void }) {
-  const [frameIndex, setFrameIndex] = useState(0);
-
-  useEffect(() => {
-    let index = 0;
-    let timer: number;
-    const count = reel.frames.length;
-    const motionPreference = window.matchMedia(REDUCED_MOTION);
-
-    function finish() {
-      window.clearTimeout(timer);
-      onFinish(reel.attempt);
-    }
-
-    function skipMotion(event: MediaQueryListEvent) {
-      if (event.matches) finish();
-    }
-
-    function nextFrame() {
-      const delay = elapsedForFrame(index + 1, count) - elapsedForFrame(index, count);
-      timer = window.setTimeout(() => {
-        index += 1;
-        if (index === count) {
-          finish();
-        } else {
-          setFrameIndex(index);
-          nextFrame();
-        }
-      }, delay);
-    }
-
-    nextFrame();
-    motionPreference.addEventListener("change", skipMotion);
-    return () => {
-      window.clearTimeout(timer);
-      motionPreference.removeEventListener("change", skipMotion);
-    };
-  }, [reel, onFinish]);
-
-  const person = reel.frames[frameIndex];
-  return (
-    <div className="as-reel">
-      <p className="as-reel-label" role="status"><Sparkles size={16} aria-hidden="true" /> Girando a roleta…</p>
-      <div className="as-reel-window" aria-hidden="true">
-        <div className="as-reel-peek">{reel.frames[frameIndex - 1]?.name ?? "⋯"}</div>
-        <div className="as-reel-lane">
-          <div className="as-reel-frame" key={frameIndex}>
-            <ProfilePhoto person={person} />
-            <div>
-              <strong>{person.name}</strong>
-              {person.nickname && <span className="as-person-nickname">“{person.nickname}”</span>}
-            </div>
-          </div>
-        </div>
-        <div className="as-reel-peek">{reel.frames[frameIndex + 1]?.name ?? "⋯"}</div>
-      </div>
-      <div className="as-reel-progress" aria-hidden="true"><span style={{ animationDuration: `${REVEAL_DURATION}ms` }} /></div>
-    </div>
-  );
-}
-
-function RevealConfetti() {
-  return (
-    <span className="as-confetti" aria-hidden="true">
-      {CONFETTI.map(([x, y, spin, color]) => (
-        <i key={x} style={{ "--as-confetti-x": `${x}px`, "--as-confetti-y": `${y}px`, "--as-confetti-spin": `${spin}deg`, backgroundColor: color } as CSSProperties} />
-      ))}
-    </span>
-  );
-}
-
 export default function Home() {
   const [mode, setMode] = useState<Mode>();
   const [drawStatus, setDrawStatus] = useState<DrawStatus>();
   const [roundNotice, setRoundNotice] = useState("");
   const [accessInput, setAccessInput] = useState("");
   const [account, setAccount] = useState<ParticipantSession | null>(null);
+  const [restoring, setRestoring] = useState(true);
+  const [restoreFailed, setRestoreFailed] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [editingProfile, setEditingProfile] = useState(false);
@@ -269,6 +155,7 @@ export default function Home() {
   const codeInput = useRef<HTMLInputElement>(null);
   const revealOutput = useRef<HTMLDivElement>(null);
   const loginRequest = useRef<AbortController | null>(null);
+  const browserSession = useRef<StoredSession | null>(null);
   const revealRequest = useRef<AbortController | null>(null);
   const seenRequest = useRef<AbortController | null>(null);
   const saveRequest = useRef<AbortController | null>(null);
@@ -313,14 +200,22 @@ export default function Home() {
   }, [rememberDrawStatus, stopRevealAudio]);
 
   const registerSeen = useCallback(async (attempt: RevealAttempt) => {
-    if (!attempt.canSave || openAttempt.current !== attempt || seenRequest.current) return;
+    if (!attempt.canSave || attempt.restored || !attempt.code || openAttempt.current !== attempt || seenRequest.current) return;
+    if (attempt.mode === "demo") {
+      const stored = browserSession.current;
+      if (stored && "demo" in stored && !stored.opened) {
+        browserSession.current = { ...stored, opened: true };
+        writeStoredSession(browserSession.current);
+      }
+      return;
+    }
     const request = new AbortController();
     seenRequest.current = request;
     setSeenError("");
     try {
-      await post<{ ok: true }>("/api/participant", { action: "seen", accessCode: attempt.accessCode, code: attempt.code }, request.signal);
+      await post<{ ok: true }>("/api/participant", { action: "seen", ...attempt.auth, code: attempt.code, drawId: attempt.drawId }, request.signal);
       if (!request.signal.aborted) {
-        setAccount((current) => current?.accessCode === attempt.accessCode ? { ...current, revealed: true } : current);
+        setAccount((current) => current?.auth === attempt.auth ? { ...current, revealed: true } : current);
       }
     } catch {
       if (!request.signal.aborted) setSeenError("Não foi possível confirmar a visualização. Seu resultado continua disponível.");
@@ -330,7 +225,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!revealed) return;
+    if (!revealed || revealed.restored) return;
     revealOutput.current?.focus({ preventScroll: true });
     if (revealed.canSave) void registerSeen(revealed);
   }, [revealed, registerSeen]);
@@ -369,10 +264,115 @@ export default function Home() {
     if (event.drawStatus !== "cancelled") setRoundNotice("O sorteio mudou. Confira o código da rodada com o organizador.");
   }, [resetReveal]);
 
+  const openSavedResult = useCallback((result: RevealResult, auth: SessionAuth) => {
+    const attempt: RevealAttempt = { ...result, auth, restored: true };
+    openAttempt.current = attempt;
+    const days = result.mode === "demo" ? demoDays() : result.days;
+    setSelected(days);
+    setRevealed(attempt);
+    const saved = result.mode === "demo" ? hasDemoCalendar() : result.availabilitySaved;
+    setSavedCalendar(saved ? { days, download: "ready" } : null);
+  }, []);
+
+  const applySession = useCallback((response: ParticipantResponse, auth: SessionAuth) => {
+    const { sessionToken: _token, result, ...profile } = response;
+    if (profile.drawStatus) setMode(profile.drawStatus === "draft" ? "demo" : "live");
+    rememberDrawStatus(profile.drawStatus);
+    setAccount({ ...profile, auth });
+    if (profile.profileComplete && result?.canSave) openSavedResult(result, auth);
+  }, [openSavedResult, rememberDrawStatus]);
+
+  const clearAccount = useCallback(() => {
+    loginRequest.current?.abort();
+    loginRequest.current = null;
+    revealRequest.current?.abort();
+    revealRequest.current = null;
+    setLoggingIn(false);
+    setRestoring(false);
+    setRestoreFailed(false);
+    setLoadingReveal(false);
+    setLoginError("");
+    setAccount(null);
+    setAccessInput("");
+    setEditingProfile(false);
+    resetReveal();
+  }, [resetReveal]);
+
+  const restoreSession = useCallback(async (stored: StoredSession | null) => {
+    browserSession.current = stored;
+    if (!stored) {
+      setRestoring(false);
+      return;
+    }
+    const request = new AbortController();
+    loginRequest.current?.abort();
+    loginRequest.current = request;
+    setRestoring(true);
+    setRestoreFailed(false);
+    setLoginError("");
+    try {
+      if ("token" in stored) {
+        const auth = { sessionToken: stored.token };
+        const result = await post<ParticipantResponse>("/api/participant", { action: "resume", ...auth }, request.signal);
+        if (!request.signal.aborted) applySession(result, auth);
+      } else {
+        const auth = { accessCode: DEMO_CODE } as const;
+        const profile = stored.profile;
+        const result = await post<ParticipantResponse>("/api/participant", profile
+          ? { action: "profile", ...auth, steamCode: profile.steamCode, games: profile.games, photo: profile.photo }
+          : { action: "login", ...auth }, request.signal);
+        if (stored.opened && result.profileComplete) {
+          result.result = await post<RevealResult>("/api/reveal", { ...auth, code: DEMO_CODE }, request.signal);
+        }
+        if (!request.signal.aborted) applySession(result, auth);
+      }
+    } catch (error) {
+      if (request.signal.aborted) return;
+      if (error instanceof RequestError && (error.status === 401 || error.status === 403 || ("demo" in stored && error.status < 500))) {
+        if (sessionKey(readStoredSession()) === sessionKey(stored)) writeStoredSession(null);
+        browserSession.current = null;
+        if ("token" in stored) setLoginError("Sua sessão expirou. Entre de novo com o código de acesso.");
+      } else {
+        setRestoreFailed(true);
+        setLoginError("Não foi possível recuperar sua sessão. Tente novamente.");
+      }
+    } finally {
+      if (loginRequest.current === request) loginRequest.current = null;
+      if (!request.signal.aborted) setRestoring(false);
+    }
+  }, [applySession]);
+
+  useEffect(() => {
+    function syncBrowserSession(event?: StorageEvent) {
+      if (event && event.key !== BROWSER_SESSION && event.key !== null) return;
+      const stored = readStoredSession();
+      if (sessionKey(stored) === sessionKey(browserSession.current)) return;
+      clearAccount();
+      void restoreSession(stored);
+    }
+
+    function syncAfterBackNavigation(event: PageTransitionEvent) {
+      if (event.persisted) {
+        syncBrowserSession();
+        checkOpenRound.current?.();
+      }
+    }
+
+    void restoreSession(readStoredSession());
+    window.addEventListener("storage", syncBrowserSession);
+    window.addEventListener("pageshow", syncAfterBackNavigation);
+    return () => {
+      window.removeEventListener("storage", syncBrowserSession);
+      window.removeEventListener("pageshow", syncAfterBackNavigation);
+    };
+  }, [clearAccount, restoreSession]);
+
   const activeAttempt = revealed?.canSave ? revealed : reel?.attempt;
+  const accountAuth = account?.auth;
   useEffect(() => {
     const attempt = activeAttempt;
-    if (!attempt) return;
+    if (!accountAuth) return;
+    const demoAccount = "accessCode" in accountAuth;
     const controller = new AbortController();
     let checking = false;
 
@@ -382,9 +382,15 @@ export default function Home() {
       const revision = roundRevision.current;
       void readPublicEvent(controller.signal).then((event) => {
         checking = false;
-        if (!event || controller.signal.aborted || revision !== roundRevision.current || openAttempt.current !== attempt) return;
+        if (!event || controller.signal.aborted || revision !== roundRevision.current || (attempt && openAttempt.current !== attempt)) return;
         setMode(event.mode);
         rememberDrawStatus(event.drawStatus);
+        if (demoAccount && event.mode !== "demo") {
+          if (sessionKey(readStoredSession()) === "demo") writeStoredSession(null);
+          browserSession.current = null;
+          clearAccount();
+          return;
+        }
         clearChangedRound(event);
       });
     }
@@ -398,11 +404,11 @@ export default function Home() {
       document.removeEventListener("visibilitychange", check);
       checkOpenRound.current = null;
     };
-  }, [activeAttempt, clearChangedRound, rememberDrawStatus]);
+  }, [accountAuth, activeAttempt, clearAccount, clearChangedRound, rememberDrawStatus]);
 
   const completeReveal = useCallback((attempt: RevealAttempt) => {
     if (openAttempt.current !== attempt) return;
-    if (attempt.canSave) playBells(revealAudio.current, RESULT_NOTES, .33);
+    if (attempt.canSave) playAdvancementAudio(revealAudio.current);
     else stopRevealAudio();
     setSelected(attempt.mode === "demo" && attempt.canSave && attempt.code === DEMO_CODE ? demoDays() : attempt.days);
     setRevealed(attempt);
@@ -419,11 +425,20 @@ export default function Home() {
     setLoginError("");
     setLoggingIn(true);
     try {
-      const result = await post<ParticipantResponse>("/api/participant", { action: "login", accessCode: accessInput }, request.signal);
+      const result = await post<ParticipantResponse>("/api/participant", { action: "login", accessCode: accessInput, remember: true }, request.signal);
       if (request.signal.aborted) return;
-      rememberDrawStatus(result.drawStatus);
-      setAccount({ ...result, accessCode: accessInput });
+      if (result.mode === "demo") {
+        browserSession.current = { demo: true };
+        applySession(result, { accessCode: DEMO_CODE });
+      } else if (result.sessionToken) {
+        browserSession.current = { token: result.sessionToken };
+        applySession(result, { sessionToken: result.sessionToken });
+      } else {
+        throw new Error("A sessão não pôde ser criada. Atualize a página e tente novamente.");
+      }
+      writeStoredSession(browserSession.current);
       setAccessInput("");
+      setRestoreFailed(false);
       requestAnimationFrame(() => document.getElementById(result.profileComplete ? "as-reveal-heading" : "as-profile-heading")?.focus());
     } catch (error) {
       if (!request.signal.aborted) setLoginError(error instanceof Error ? error.message : "Não foi possível acessar sua conta.");
@@ -435,12 +450,28 @@ export default function Home() {
 
   async function saveProfile(profile: ParticipantDraft, signal: AbortSignal) {
     if (!account) return;
-    const { accessCode } = account;
-    const result = await post<ParticipantResponse>("/api/participant", { action: "profile", accessCode, ...profile }, signal);
+    const { auth } = account;
+    let result: ParticipantResponse;
+    try {
+      result = await post<ParticipantResponse>("/api/participant", { action: "profile", ...auth, ...profile }, signal);
+    } catch (error) {
+      if (!signal.aborted) handleExpiredSession(error, auth);
+      throw error;
+    }
     if (signal.aborted) return;
     rememberDrawStatus(result.drawStatus);
     clearChangedRound(result);
-    setAccount((current) => current?.accessCode === accessCode ? { ...result, accessCode, revealed: current.revealed || result.revealed } : current);
+    const { result: savedResult, sessionToken: _token, ...updatedProfile } = result;
+    setAccount((current) => current?.auth === auth ? { ...updatedProfile, auth } : current);
+    if (savedResult?.canSave && !openAttempt.current?.canSave) openSavedResult(savedResult, auth);
+    const stored = browserSession.current;
+    if (result.mode === "demo" && stored && "demo" in stored) {
+      browserSession.current = {
+        ...stored,
+        profile: { ...profile, photo: profile.photo ?? stored.profile?.photo },
+      };
+      writeStoredSession(browserSession.current);
+    }
     setEditingProfile(false);
     requestAnimationFrame(() => document.getElementById("as-reveal-heading")?.focus());
   }
@@ -454,21 +485,13 @@ export default function Home() {
     setRoundNotice("");
     setLoadingReveal(true);
 
-    if (soundOn) {
-      try {
-        const context = new AudioContext();
-        revealAudio.current = { context, bus: null };
-        void context.resume().catch(() => {});
-      } catch {
-        // Audio is optional on browsers that do not support it.
-      }
-    }
+    if (soundOn) revealAudio.current = prepareRevealAudio();
 
     try {
-      const result = await post<RevealResult>("/api/reveal", { accessCode: account.accessCode, code }, request.signal);
+      const result = await post<RevealResult>("/api/reveal", { ...account.auth, code }, request.signal);
       if (request.signal.aborted) return;
       rememberDrawStatus(result.drawStatus);
-      const attempt = { ...result, code, accessCode: account.accessCode };
+      const attempt = { ...result, code, auth: account.auth };
       openAttempt.current = attempt;
       const frames = result.canSave && !window.matchMedia(REDUCED_MOTION).matches ? rouletteFrames(result) : [];
 
@@ -476,13 +499,13 @@ export default function Home() {
         for (const photo of new Set(frames.map((person) => person.photo))) {
           if (photo) new Image().src = profilePhotoUrl(photo);
         }
-        playBells(revealAudio.current, REEL_NOTES, .23);
+        playRollingAudio(revealAudio.current);
         setReel({ attempt, frames });
       } else {
         completeReveal(attempt);
       }
     } catch (error) {
-      if (!request.signal.aborted) {
+      if (!request.signal.aborted && !handleExpiredSession(error, account.auth)) {
         stopRevealAudio();
         setRevealError(error instanceof Error ? error.message : "Não conseguimos abrir a revelação. Tente novamente.");
         const revision = roundRevision.current;
@@ -499,14 +522,25 @@ export default function Home() {
   }
 
   function signOut() {
-    revealRequest.current?.abort();
-    revealRequest.current = null;
-    setLoadingReveal(false);
-    setAccount(null);
-    setAccessInput("");
-    setEditingProfile(false);
-    resetReveal();
+    const stored = browserSession.current;
+    browserSession.current = null;
+    writeStoredSession(null);
+    clearAccount();
+    if (stored && "token" in stored) {
+      void post("/api/participant", { action: "logout", sessionToken: stored.token }, undefined, true).catch(() => {});
+    }
     requestAnimationFrame(() => accessField.current?.focus());
+  }
+
+  function handleExpiredSession(error: unknown, auth: SessionAuth) {
+    if (!(error instanceof RequestError) || error.status !== 401 || !("sessionToken" in auth) ||
+      sessionKey(browserSession.current) !== auth.sessionToken) return false;
+    if (sessionKey(readStoredSession()) === auth.sessionToken) writeStoredSession(null);
+    browserSession.current = null;
+    clearAccount();
+    setLoginError("Sua sessão expirou. Entre de novo com o código de acesso.");
+    requestAnimationFrame(() => accessField.current?.focus());
+    return true;
   }
 
   function toggleSound() {
@@ -534,11 +568,11 @@ export default function Home() {
       if (revealed.mode === "demo") {
         localStorage.setItem(DEMO_AVAILABILITY, JSON.stringify(days));
       } else {
-        await post<{ ok: true }>("/api/availability", { accessCode: revealed.accessCode, code: revealed.code, days }, request.signal);
+        await post<{ ok: true }>("/api/availability", { ...revealed.auth, code: revealed.code, drawId: revealed.drawId, days }, request.signal);
       }
       if (!request.signal.aborted) setSavedCalendar({ days, download: "ready" });
     } catch (error) {
-      if (!request.signal.aborted) {
+      if (!request.signal.aborted && !handleExpiredSession(error, revealed.auth)) {
         setSaveError(revealed.mode === "demo"
           ? "Este navegador não permitiu salvar a demonstração."
           : error instanceof Error ? error.message : "Não conseguimos salvar. Tente novamente.");
@@ -606,14 +640,14 @@ export default function Home() {
       </header>
 
       <main className="as-shell">
-        <section className="as-hero" aria-labelledby="as-title">
+        {!account && !restoring && <section className="as-hero" aria-labelledby="as-title">
           <div className="as-hero-copy">
             <p className="as-hero-label"><Sparkles size={14} aria-hidden="true" /> A TRADIÇÃO CONTINUA</p>
             <h1 id="as-title">O segredo<br /><em>começa aqui.</em></h1>
             <p className="as-hero-description">Descubra quem você tirou e ajude a encontrar uma data em que todo mundo possa participar.</p>
           </div>
           <img className="as-gifts" src={assetUrl("/presentes.svg")} alt="" aria-hidden="true" width={520} height={365} />
-        </section>
+        </section>}
 
         {drawStatus === "test" && (
           <div className="as-round-banner as-round-test" role="status">
@@ -628,7 +662,7 @@ export default function Home() {
           </div>
         )}
 
-        <section className="as-guide" aria-labelledby="as-guide-heading">
+        {!account && !restoring && <section className="as-guide" aria-labelledby="as-guide-heading">
           <div className="as-guide-header">
             <h2 id="as-guide-heading">Como participar</h2>
             <a href={`#${startHeading}`}>Começar <ArrowRight size={16} aria-hidden="true" /></a>
@@ -647,14 +681,18 @@ export default function Home() {
               <div><h3>Marque e salve suas datas</h3><p>Em novembro e dezembro, marque os dias em que você não pode participar. Salve as datas e baixe o PDF.</p></div>
             </li>
           </ol>
-        </section>
+        </section>}
 
-        {!account ? (
+        {restoring ? (
+          <section className="as-card as-access-card" aria-label="Sessão do participante">
+            <p className="as-card-description" role="status"><LockKeyhole size={17} aria-hidden="true" /> Recuperando sua sessão…</p>
+          </section>
+        ) : !account ? (
           <section className="as-card as-access-card" aria-labelledby="as-access-heading">
             <div>
               <div className="as-step"><span>01</span> ACESSO DO PARTICIPANTE</div>
               <h2 id="as-access-heading" tabIndex={-1}>Entre na sua conta</h2>
-              <p className="as-card-description">Use seu código de acesso para preparar o perfil. O código do sorteio será pedido na hora da revelação.</p>
+              <p className="as-card-description">Entre com seu código de acesso. O navegador guarda sua sessão para você voltar ao resultado.</p>
             </div>
             <form className="as-access-form as-reveal-form" onSubmit={login}>
               <label htmlFor="as-access-code">Seu código de acesso</label>
@@ -668,6 +706,7 @@ export default function Home() {
                 {loggingIn ? "Entrando…" : "Entrar na minha conta"} <ArrowRight size={17} aria-hidden="true" />
               </button>
               {loginError && <p className="as-error" role="alert">{loginError}</p>}
+              {restoreFailed && <button className="as-text-button" type="button" disabled={loggingIn} onClick={() => void restoreSession(browserSession.current)}>Tentar recuperar sessão</button>}
               {mode === "demo" && <p className="as-demo-note">Modo demonstração <span aria-hidden="true">·</span>{" "}<button type="button" disabled={loggingIn} onClick={() => { setAccessInput(DEMO_CODE); setLoginError(""); accessField.current?.focus(); }}>Usar código {DEMO_CODE}</button></p>}
             </form>
           </section>
@@ -685,7 +724,7 @@ export default function Home() {
                     requestAnimationFrame(() => document.getElementById("as-profile-heading")?.focus());
                   }}>Editar perfil</button>
                 )}
-                <button type="button" className="as-account-button" onClick={signOut}><LogOut size={15} aria-hidden="true" /> Sair</button>
+                <button type="button" className="as-account-button" onClick={signOut}><LogOut size={15} aria-hidden="true" /> Sair da conta</button>
               </div>
             </div>
 
@@ -716,13 +755,15 @@ export default function Home() {
                     {drawStatus === "cancelled" ? <p className="as-card-description">A revelação está suspensa até a próxima rodada.</p> : revealed ? (
                       <div className="as-reveal-result">
                         <div
-                          className={revealed.canSave ? "as-person as-person-found" : "as-person as-person-incorrect"}
+                          className={revealed.canSave
+                            ? `as-person as-person-found${revealed.restored ? " as-person-restored" : ""}`
+                            : "as-person as-person-incorrect"}
                           ref={revealOutput}
                           role="group"
                           tabIndex={-1}
                           aria-labelledby="as-result-label as-result-name"
                         >
-                          {revealed.canSave && <RevealConfetti />}
+                          {revealed.canSave && !revealed.restored && <RevealConfetti />}
                           {revealed.canSave && <ProfilePhoto person={revealed.person} />}
                           <div>
                             <p id="as-result-label">{revealed.canSave && <Sparkles size={14} aria-hidden="true" />}{revealed.canSave ? (testResult ? "Resultado do sorteio de teste" : "Seu amigo secreto é") : "Código incorreto"}</p>

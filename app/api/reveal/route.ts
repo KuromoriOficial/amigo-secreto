@@ -3,7 +3,6 @@ import { endpoint, readBody } from "@/lib/server/http";
 
 export function POST(request: Request) {
   return endpoint(async () => {
-    const { accessCode, code } = await readBody(request, 1024);
-    return reveal(accessCode, code);
+    return reveal(await readBody(request, 1024));
   });
 }
