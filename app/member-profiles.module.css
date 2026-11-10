@@ -22,10 +22,9 @@
 }
 
 .kicker svg { flex: none; }
-.description, .status, .error, .success { margin: 7px 0 0; font-size: 12px; line-height: 1.6; }
+.description, .status, .error { margin: 7px 0 0; font-size: 12px; line-height: 1.6; }
 .description, .status { color: var(--as-muted); }
 .error { color: var(--as-danger-ink, #983c2e); font-weight: 750; }
-.success { color: var(--as-green-ink, var(--as-green)); font-weight: 750; }
 
 .grid {
   display: grid;
@@ -112,7 +111,7 @@
   font-weight: 800;
 }
 
-.secondary, .primary, .close {
+.secondary, .close {
   display: inline-flex;
   min-height: 38px;
   align-items: center;
@@ -130,9 +129,7 @@
 }
 
 .secondary:hover:not([aria-disabled="true"]), .close:hover { background: var(--as-surface-green, #edf3e7); }
-.secondary[aria-disabled="true"], .primary:disabled { opacity: .6; cursor: default; }
-.primary { border-color: transparent; background: var(--as-action, var(--as-green)); color: var(--as-action-text, #fff9ed); }
-.primary:hover:not(:disabled) { filter: brightness(1.08); }
+.secondary[aria-disabled="true"] { opacity: .6; cursor: default; }
 
 .dialog {
   width: min(calc(100% - 30px), 575px);
@@ -162,13 +159,13 @@
 .dialogIdentity .nickname { font-size: 13px; }
 .close { min-width: 39px; flex: none; padding: 0; }
 
-.gameSection, .comments {
+.gameSection {
   margin-top: 17px;
   padding-top: 13px;
   border-top: 1px solid var(--as-line);
 }
 
-.gameSection h3, .comments h3 {
+.gameSection h3 {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -179,51 +176,6 @@
 }
 
 .gameSection :global(.as-game-tiles) { margin-bottom: 0; }
-.comments .secondary { margin-top: 7px; }
-
-.compose {
-  padding: 10px;
-  border: 1px solid var(--as-line);
-  border-radius: 10px;
-  background: var(--as-subtle, #faf7ef);
-}
-
-.compose label { display: block; margin-bottom: 5px; color: var(--as-ink); font-size: 12px; font-weight: 800; }
-
-.compose textarea {
-  display: block;
-  width: 100%;
-  min-height: 72px;
-  padding: 8px;
-  resize: vertical;
-  border: 1px solid var(--as-line);
-  border-radius: 7px;
-  background: var(--as-paper);
-  color: var(--as-ink);
-  font-size: 16px;
-  line-height: 1.5;
-}
-
-.compose textarea:focus-visible { outline: 2px solid var(--as-green); outline-offset: 2px; }
-.compose textarea[aria-invalid="true"] { border-color: var(--as-danger-ink, #983c2e); }
-
-.composeActions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; }
-.composeActions p { margin: 0; font-size: 10px; font-weight: 750; }
-
-.commentList { display: grid; gap: 7px; margin: 10px 0 0; padding: 0; list-style: none; }
-
-.comment {
-  min-width: 0;
-  padding: 9px 10px;
-  border: 1px solid var(--as-line);
-  border-radius: 9px;
-  background: var(--as-subtle, #faf7ef);
-}
-
-.commentMeta { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 3px 8px; }
-.commentMeta strong { color: var(--as-green); font-size: 12px; overflow-wrap: anywhere; }
-.commentMeta time { color: var(--as-muted); font-size: 10px; }
-.commentText { margin: 4px 0 0; color: var(--as-ink); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; white-space: pre-wrap; }
 
 @media (max-width: 640px) {
   .gallery { margin-top: 16px; }

@@ -33,10 +33,12 @@ type OrganizerAction =
   | { action: "reset-draw" };
 type DrawIntent = { action: "generate" | "import"; kind: DrawKind } | { action: "cancel-draw" } | { action: "reset-draw" };
 type AuditAction = { action: "audit"; confirmation: "REVELAR" };
+type AnnouncementAction = { action: "announce"; text: string; requestId: string };
 type AuditPerson = { id: string; name: string; nickname?: string };
 type AuditPair = { giver: AuditPerson; recipient: AuditPerson };
-type IconName = "gift" | "arrow" | "lock" | "calendar" | "copy" | "people" | "check";
+type IconName = "gift" | "arrow" | "lock" | "calendar" | "copy" | "people" | "check" | "megaphone";
 
+const announcementLimit = 500;
 const emptyDraft: PhotoDraft = { name: "", photo: "" };
 const participantPage = pageUrl("/");
 const months = { "11": "Novembro", "12": "Dezembro" };
@@ -90,11 +92,12 @@ function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
     copy: <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></>,
     people: <><circle cx="9" cy="7" r="3" /><path d="M3 20v-2a5 5 0 0 1 5-5h2a5 5 0 0 1 5 5v2m2-16a3 3 0 0 1 0 6m4 10v-2a5 5 0 0 0-3-4.6" /></>,
     check: <path d="m5 12 4 4L19 6" />,
+    megaphone: <><path d="m3 11 16-6v14L3 14v-3Zm5 5 2 4h3l-2-3m8-6h2m-2 4h2" /></>,
   };
   return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
-async function organizerFetch(key: string, action?: OrganizerAction | AuditAction, signal?: AbortSignal) {
+async function organizerFetch(key: string, action?: OrganizerAction | AuditAction | AnnouncementAction, signal?: AbortSignal) {
   const response = await fetch(apiUrl("/api/organizer"), {
     method: action ? "POST" : "GET",
     headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), ...(action ? { "Content-Type": "application/json" } : {}) },
@@ -114,6 +117,80 @@ async function organizerRequest(key: string, action?: OrganizerAction, signal?: 
   const data = await organizerFetch(key, action, signal);
   if (data.phase !== "draft" && data.phase !== "drawn") throw new Error("Não foi possível atualizar o painel.");
   return data as Event;
+}
+
+function AnnouncementComposer({ organizerKey }: { organizerKey: string }) {
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [feedback, setFeedback] = useState<{ kind: "success" | "error"; message: string } | null>(null);
+  const pending = useRef<AbortController | null>(null);
+  const attempt = useRef<{ text: string; id: string } | null>(null);
+  const length = [...text].length;
+  const overLimit = length > announcementLimit;
+
+  useEffect(() => () => pending.current?.abort(), []);
+
+  async function publish(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const message = text.trim();
+    if (!message || overLimit || pending.current) return;
+
+    const controller = new AbortController();
+    pending.current = controller;
+    setSending(true);
+    setFeedback(null);
+    try {
+      if (attempt.current?.text !== message) attempt.current = { text: message, id: crypto.randomUUID() };
+      const response = await organizerFetch(organizerKey, { action: "announce", text: message, requestId: attempt.current.id }, controller.signal);
+      const published = response.message;
+      if (!published || typeof published !== "object" || !("kind" in published) || published.kind !== "announcement") {
+        throw new Error("Não foi possível confirmar o envio do comunicado.");
+      }
+      if (controller.signal.aborted) return;
+      attempt.current = null;
+      setText("");
+      setFeedback({ kind: "success", message: "Comunicado publicado no chat geral." });
+    } catch (cause) {
+      if (controller.signal.aborted) return;
+      const detail = cause instanceof Error && !(cause instanceof TypeError) ? cause.message : "Não foi possível enviar o comunicado. Tente novamente.";
+      setFeedback({ kind: "error", message: detail });
+    } finally {
+      if (pending.current === controller) pending.current = null;
+      if (!controller.signal.aborted) setSending(false);
+    }
+  }
+
+  return (
+    <section className={`${styles.card} ${styles.announcementCard}`} aria-labelledby="announcement-title">
+      <div className={styles.sectionHeading}>
+        <span className={`${styles.sectionIcon} ${styles.announcementIcon}`}><Icon name="megaphone" /></span>
+        <div>
+          <h2 id="announcement-title">Comunicado importante</h2>
+          <p id="announcement-description">Publique um aviso em destaque no chat geral. Ele aparece como <strong>ThyrdDicks</strong> para o grupo.</p>
+        </div>
+      </div>
+      <form className={styles.announcementForm} onSubmit={publish} aria-busy={sending}>
+        <label htmlFor="announcement-text">Mensagem do comunicado</label>
+        <textarea
+          id="announcement-text"
+          aria-describedby="announcement-description announcement-count"
+          aria-invalid={overLimit}
+          rows={3}
+          maxLength={announcementLimit * 2}
+          placeholder="Escreva o aviso para o grupo"
+          value={text}
+          onChange={(event) => { setText(event.target.value); setFeedback(null); }}
+          disabled={sending}
+          required
+        />
+        <div className={styles.announcementActions}>
+          <span id="announcement-count" className={overLimit ? styles.announcementOverLimit : undefined}>{length} / {announcementLimit} caracteres</span>
+          <button className={styles.primary} type="submit" disabled={sending || overLimit || !text.trim()}>{sending ? "Publicando…" : "Publicar comunicado"}</button>
+        </div>
+        {feedback && <p className={feedback.kind === "success" ? styles.success : styles.error} role={feedback.kind === "success" ? "status" : "alert"}>{feedback.message}</p>}
+      </form>
+    </section>
+  );
 }
 
 function parseOfflineDraw(text: string, participants: Participant[]): OfflineDraw {
@@ -650,6 +727,8 @@ export default function OrganizerPage() {
               <div><span>Datas futuras livres para todos</span><strong>{pending === 0 ? commonDays : "—"}</strong></div>
             </section>
           )}
+
+          <AnnouncementComposer organizerKey={key} />
 
           <div className={styles.grid}>
             <section className={styles.card} aria-labelledby="participants-title">

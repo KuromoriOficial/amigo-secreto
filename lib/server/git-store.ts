@@ -50,12 +50,12 @@ export type StoredMemberComment = { id: string; participantId: string; authorId:
 type MemberComments = { version: 1; comments: StoredMemberComment[] };
 
 type Configuration = { repositoryUrl: string; token: string; branch: string };
-type DataFile<T> = { name: string; commitMessage: string; parse: (encoded: string) => T; empty: () => T };
-type Snapshot<T> = { sha?: string; value: T };
+export type DataFile<T> = { name: string; commitMessage: string; parse: (encoded: string) => T; empty: () => T };
+type Snapshot<T> = { sha?: string; etag?: string; value: T };
 
 const maxFileBytes = 4_000_000;
 const maxWriteAttempts = 4;
-export const MEMBER_COMMENT_LIMIT = 240;
+const memberCommentLimit = 240;
 
 const eventFile: DataFile<StoredEvent> = {
   name: "amigo-secreto-2026.json",
@@ -70,6 +70,7 @@ const commentsFile: DataFile<MemberComments> = {
   parse: parseMemberComments,
   empty: () => ({ version: 1, comments: [] }),
 };
+const cachedEvent = createCachedFileReader(eventFile);
 
 export function hasGitStorage() {
   return Boolean(env.GITHUB_DATA_REPOSITORY?.trim() && env.GITHUB_DATA_TOKEN?.trim());
@@ -94,7 +95,7 @@ function configuration(): Configuration {
   };
 }
 
-async function github(config: Configuration, path: string, method: "GET" | "PUT" = "GET", body?: string) {
+async function github(config: Configuration, path: string, method: "GET" | "PUT" = "GET", body?: string, etag?: string) {
   try {
     const headers = new Headers({
       Accept: "application/vnd.github+json",
@@ -106,6 +107,7 @@ async function github(config: Configuration, path: string, method: "GET" | "PUT"
     if (method === "GET" && path.startsWith("/contents/")) {
       headers.set("Accept", "application/vnd.github.object+json");
     }
+    if (etag) headers.set("If-None-Match", etag);
 
     return await fetch(`${config.repositoryUrl}${path}`, {
       method,
@@ -227,7 +229,7 @@ function isMemberComment(value: unknown): value is StoredMemberComment {
   return isRecord(value) && typeof value.id === "string" && value.id.length === 36 &&
     typeof value.participantId === "string" && value.participantId.length > 0 &&
     typeof value.authorId === "string" && value.authorId.length > 0 &&
-    typeof value.text === "string" && !!value.text.trim() && [...value.text].length <= MEMBER_COMMENT_LIMIT &&
+    typeof value.text === "string" && !!value.text.trim() && [...value.text].length <= memberCommentLimit &&
     typeof value.createdAt === "string" && Number.isFinite(Date.parse(value.createdAt));
 }
 
@@ -241,9 +243,11 @@ function parseMemberComments(encoded: string): MemberComments {
   return { version: 1, comments: value.comments };
 }
 
-async function readSnapshot<T>(config: Configuration, dataFile: DataFile<T>): Promise<Snapshot<T>> {
+async function readSnapshot<T>(config: Configuration, dataFile: DataFile<T>, previous?: Snapshot<T>): Promise<Snapshot<T>> {
   const branch = encodeURIComponent(config.branch);
-  const response = await github(config, `/contents/${dataFile.name}?ref=${branch}`);
+  const response = await github(config, `/contents/${dataFile.name}?ref=${branch}`, "GET", undefined, previous?.etag);
+
+  if (response.status === 304 && previous) return previous;
 
   if (response.status === 404) {
     await discardBody(response);
@@ -266,16 +270,64 @@ async function readSnapshot<T>(config: Configuration, dataFile: DataFile<T>): Pr
     ? await githubObject(await github(config, `/git/blobs/${file.sha}`))
     : file;
   if (content.encoding !== "base64" || typeof content.content !== "string") throw invalidData();
-  return { sha: file.sha, value: dataFile.parse(content.content) };
+  return { sha: file.sha, etag: response.headers.get("ETag") ?? undefined, value: dataFile.parse(content.content) };
 }
 
-async function readFile<T>(dataFile: DataFile<T>) {
+function sameConfiguration(a: Configuration | undefined, b: Configuration) {
+  return a?.repositoryUrl === b.repositoryUrl && a.token === b.token && a.branch === b.branch;
+}
+
+let privateCheck: { config: Configuration; expiresAt: number } | undefined;
+
+async function requireCachedPrivateRepository(config: Configuration) {
+  if (privateCheck && privateCheck.expiresAt > Date.now() && sameConfiguration(privateCheck.config, config)) {
+    return;
+  }
+  await requirePrivateRepository(config);
+  privateCheck = { config, expiresAt: Date.now() + 60_000 };
+}
+
+export function createCachedFileReader<T>(dataFile: DataFile<T>) {
+  let config: Configuration | undefined;
+  let snapshot: Snapshot<T> | undefined;
+  let expiresAt = 0;
+  let generation = 0;
+  let appliedGeneration = 0;
+
+  function invalidate() {
+    snapshot = undefined;
+    expiresAt = 0;
+    appliedGeneration = ++generation;
+  }
+
+  async function read(force = false) {
+    const current = configuration();
+    if (!sameConfiguration(config, current)) invalidate();
+    config = current;
+    if (!force && snapshot && expiresAt > Date.now()) return snapshot.value;
+
+    const previous = snapshot;
+    const readGeneration = ++generation;
+    await requireCachedPrivateRepository(current);
+    const next = await readSnapshot(current, dataFile, previous);
+    if (readGeneration > appliedGeneration) {
+      snapshot = next;
+      expiresAt = Date.now() + 5_000;
+      appliedGeneration = readGeneration;
+    }
+    return next.value;
+  }
+
+  return { read, invalidate };
+}
+
+export async function readFile<T>(dataFile: DataFile<T>) {
   const config = configuration();
   await requirePrivateRepository(config);
   return (await readSnapshot(config, dataFile)).value;
 }
 
-async function updateFile<T>(dataFile: DataFile<T>, change: (current: T) => T | Promise<T>) {
+export async function updateFile<T>(dataFile: DataFile<T>, change: (current: T) => T | Promise<T>) {
   const config = configuration();
   await requirePrivateRepository(config);
   let current = await readSnapshot(config, dataFile);
@@ -325,20 +377,16 @@ export function readEvent() {
   return readFile(eventFile);
 }
 
-export function updateEvent(change: (current: StoredEvent) => StoredEvent | Promise<StoredEvent>) {
-  return updateFile(eventFile, change);
+export function readEventForChat() {
+  return cachedEvent.read();
+}
+
+export async function updateEvent(change: (current: StoredEvent) => StoredEvent | Promise<StoredEvent>) {
+  const updated = await updateFile(eventFile, change);
+  cachedEvent.invalidate();
+  return updated;
 }
 
 export async function readMemberComments() {
   return (await readFile(commentsFile)).comments;
-}
-
-export async function addMemberComment(comment: StoredMemberComment) {
-  await updateFile(commentsFile, (current) => {
-    if (current.comments.some(({ id }) => id === comment.id)) return current;
-    if (current.comments.filter(({ participantId }) => participantId === comment.participantId).length >= 50) {
-      throw new ApiError(409, "Este perfil já recebeu o máximo de 50 comentários.");
-    }
-    return { ...current, comments: [...current.comments, comment] };
-  });
 }

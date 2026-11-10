@@ -1,3 +1,4 @@
+import { announceChat } from "@/lib/server/chat";
 import { auditPairs, cancelDraw, editParticipant, generateAccessCodes, importOfflineDraw, organizerState, registerDrawCodes, requireOrganizer, resetDraw, updateRoster } from "@/lib/server/event";
 import { endpoint, readBody } from "@/lib/server/http";
 
@@ -21,6 +22,7 @@ export function POST(request: Request) {
       case "register-codes": return registerDrawCodes(body.drawCodes);
       case "credentials": return generateAccessCodes();
       case "edit-profile": return editParticipant(body);
+      case "announce": return announceChat(body.text, body.requestId);
       case "audit": return auditPairs(body.confirmation);
       default: return updateRoster(body.action, body.participants);
     }

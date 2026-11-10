@@ -1,7 +1,7 @@
 "use client";
 
-import { ArrowUpRight, MessageCircle, Send, UsersRound, X } from "lucide-react";
-import { type FormEvent, useEffect, useId, useRef, useState } from "react";
+import { ArrowUpRight, UsersRound, X } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
 import { apiUrl } from "../lib/frontend-paths";
 import type { SteamGame } from "../lib/steam-games";
 import { GameTiles } from "./participant-profile";
@@ -9,18 +9,7 @@ import { profilePhotoUrl } from "./reveal-effects";
 import styles from "./member-profiles.module.css";
 
 type Member = { id: string; name: string; nickname?: string; photo: string; games: SteamGame[] };
-type MemberComment = {
-  id: string;
-  authorName: string;
-  authorNickname?: string;
-  text: string;
-  createdAt: string;
-};
-type MemberDetail = { member: Member; comments: MemberComment[] };
 type ExpiredHandler = (sessionToken: string) => void;
-
-const COMMENT_LIMIT = 240;
-const COMMENT_DATE = new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" });
 
 class MemberRequestError extends Error {
   constructor(message: string, readonly status: number) {
@@ -85,90 +74,14 @@ function MemberTile({ member, onOpen }: { member: Member; onOpen: () => void }) 
   );
 }
 
-function CommentItem({ comment }: { comment: MemberComment }) {
-  const date = new Date(comment.createdAt);
-  const hasDate = Number.isFinite(date.getTime());
-  return (
-    <li className={styles.comment}>
-      <div className={styles.commentMeta}>
-        <strong>{comment.authorName}{comment.authorNickname ? ` · ${comment.authorNickname}` : ""}</strong>
-        {hasDate && <time dateTime={comment.createdAt}>{COMMENT_DATE.format(date)}</time>}
-      </div>
-      <p className={styles.commentText}>{comment.text}</p>
-    </li>
-  );
-}
-
-function MemberDialog({
-  selected, sessionToken, onExpired, onClose,
-}: {
-  selected: Member;
-  sessionToken: string;
-  onExpired?: ExpiredHandler;
-  onClose: () => void;
-}) {
+function MemberDialog({ member, onClose }: { member: Member; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const commentInput = useRef<HTMLTextAreaElement>(null);
-  const commentRequest = useRef<AbortController | null>(null);
   const headingId = useId();
-  const commentHeadingId = useId();
-  const commentInputId = useId();
-  const commentCountId = useId();
-  const [detail, setDetail] = useState<MemberDetail | null>(null);
-  const [detailError, setDetailError] = useState("");
-  const [loadVersion, setLoadVersion] = useState(0);
-  const [text, setText] = useState("");
-  const [sending, setSending] = useState(false);
-  const [sendError, setSendError] = useState("");
-  const [sent, setSent] = useState(false);
-  const member = detail?.member ?? selected;
-  const count = Array.from(text).length;
-  const cleanedText = text.trim();
 
   useEffect(() => {
     const element = dialog.current;
     if (element && !element.open) element.showModal();
-    return () => commentRequest.current?.abort();
   }, []);
-
-  useEffect(() => {
-    const request = new AbortController();
-    void requestMembers<MemberDetail>(sessionToken, { action: "profile", participantId: selected.id }, request.signal)
-      .then((result) => {
-        if (!request.signal.aborted) setDetail(result);
-      })
-      .catch((error: unknown) => {
-        if (!request.signal.aborted) setDetailError(requestError(error, sessionToken, onExpired, "Não foi possível carregar os recados."));
-      });
-    return () => request.abort();
-  }, [loadVersion, onExpired, selected.id, sessionToken]);
-
-  async function sendComment(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!detail || !cleanedText || count > COMMENT_LIMIT || commentRequest.current) return;
-    const request = new AbortController();
-    commentRequest.current = request;
-    setSending(true);
-    setSendError("");
-    setSent(false);
-    try {
-      const { comment } = await requestMembers<{ comment: MemberComment }>(sessionToken, {
-        action: "comment",
-        participantId: selected.id,
-        text: cleanedText,
-      }, request.signal);
-      if (request.signal.aborted) return;
-      setDetail((current) => current ? { ...current, comments: [comment, ...current.comments] } : current);
-      setText("");
-      setSent(true);
-      requestAnimationFrame(() => commentInput.current?.focus());
-    } catch (error) {
-      if (!request.signal.aborted) setSendError(requestError(error, sessionToken, onExpired, "Não foi possível enviar o recado. Tente novamente."));
-    } finally {
-      if (commentRequest.current === request) commentRequest.current = null;
-      if (!request.signal.aborted) setSending(false);
-    }
-  }
 
   return (
     <dialog className={styles.dialog} ref={dialog} aria-labelledby={headingId} onClose={onClose}>
@@ -191,39 +104,6 @@ function MemberDialog({
           {member.games.length ? <GameTiles games={member.games} /> : <p className={styles.status}>Este perfil ainda não escolheu os jogos.</p>}
         </div>
 
-        <section className={styles.comments} aria-labelledby={commentHeadingId}>
-          <h3 id={commentHeadingId}><MessageCircle size={18} aria-hidden="true" /> Recados no perfil</h3>
-          {detailError ? (
-            <div>
-              <p className={styles.error} role="alert">{detailError}</p>
-              <button className={styles.secondary} type="button" onClick={() => { setDetailError(""); setLoadVersion((value) => value + 1); }}>
-                Tentar novamente
-              </button>
-            </div>
-          ) : !detail ? <p className={styles.status} role="status">Carregando recados…</p> : (
-            <>
-              <form className={styles.compose} onSubmit={sendComment}>
-                <label htmlFor={commentInputId}>Deixe um recado</label>
-                <textarea id={commentInputId} ref={commentInput} rows={3} maxLength={COMMENT_LIMIT * 2} required
-                  value={text} disabled={sending} aria-describedby={commentCountId} aria-invalid={count > COMMENT_LIMIT}
-                  onChange={(event) => { setText(event.target.value); setSendError(""); setSent(false); }} />
-                <div className={styles.composeActions}>
-                  <p id={commentCountId} className={count > COMMENT_LIMIT ? styles.error : styles.status}>{count} de {COMMENT_LIMIT} caracteres</p>
-                  <button className={styles.primary} type="submit" disabled={sending || !cleanedText || count > COMMENT_LIMIT}>
-                    <Send size={15} aria-hidden="true" /> {sending ? "Enviando…" : "Publicar recado"}
-                  </button>
-                </div>
-                {sendError && <p className={styles.error} role="alert">{sendError}</p>}
-                {sent && <p className={styles.success} role="status">Recado publicado.</p>}
-              </form>
-              {detail.comments.length ? (
-                <ul className={styles.commentList} role="list">
-                  {detail.comments.map((comment) => <CommentItem key={comment.id} comment={comment} />)}
-                </ul>
-              ) : <p className={styles.status}>Ainda não há recados neste perfil.</p>}
-            </>
-          )}
-        </section>
       </div>
     </dialog>
   );
@@ -265,7 +145,7 @@ export default function MemberProfiles({ sessionToken, onExpired }: { sessionTok
         <div>
           <p className={styles.kicker}><UsersRound size={15} aria-hidden="true" /> A TURMA DO AMIGO SECRETO</p>
           <h2 id={headingId}>Perfis do grupo</h2>
-          <p className={styles.description}>Veja os jogos escolhidos pelos participantes e deixe um recado no perfil.</p>
+          <p className={styles.description}>Veja os jogos escolhidos pelos participantes.</p>
         </div>
         <button className={styles.secondary} type="button" aria-disabled={loading} onClick={() => void loadMembers()}>
           {error ? "Tentar novamente" : members ? "Atualizar perfis" : "Carregar perfis"} <ArrowUpRight size={15} aria-hidden="true" />
@@ -278,7 +158,7 @@ export default function MemberProfiles({ sessionToken, onExpired }: { sessionTok
           {members.map((member) => <MemberTile key={member.id} member={member} onOpen={() => setSelected(member)} />)}
         </ul>
       ) : <p className={styles.status}>Ainda não há perfis cadastrados no grupo.</p>)}
-      {selected && <MemberDialog key={selected.id} selected={selected} sessionToken={sessionToken} onExpired={onExpired} onClose={() => setSelected(null)} />}
+      {selected && <MemberDialog key={selected.id} member={selected} onClose={() => setSelected(null)} />}
     </section>
   );
 }

@@ -7,6 +7,7 @@ import type { SteamGame } from "../lib/steam-games";
 import ParticipantProfile, { GameTiles, SteamDirectory, type Participant, type ParticipantDraft, type SteamFriend } from "./participant-profile";
 import { playAdvancementAudio, playRollingAudio, prepareRevealAudio, ProfilePhoto, profilePhotoUrl, REDUCED_MOTION, RevealConfetti, Roulette, rouletteFrames, type Profile, type RevealAudio } from "./reveal-effects";
 import MemberProfiles from "./member-profiles";
+import GroupChat from "./group-chat";
 import ThemeToggle from "./theme-toggle";
 
 const YEAR = 2026;
@@ -910,6 +911,14 @@ export default function Home() {
         <span className="as-footer-event"><Gift size={16} strokeWidth={1.7} aria-hidden="true" /> <span>Amigo Secreto {YEAR}</span> <span aria-hidden="true">·</span> <span>Novembro e dezembro</span></span>
         <a className="as-footer-portfolio" href={PORTFOLIO_URL} target="_blank" rel="noopener noreferrer">Portfólio do André Toshiro <ArrowUpRight size={15} aria-hidden="true" /></a>
       </footer>
+      {account && "sessionToken" in account.auth && (
+        <GroupChat
+          key={account.auth.sessionToken}
+          sessionToken={account.auth.sessionToken}
+          viewerId={account.participant.id}
+          onExpired={expireBrowserSession}
+        />
+      )}
     </div>
   );
 }

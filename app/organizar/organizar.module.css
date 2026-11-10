@@ -25,7 +25,8 @@
 .shell button:focus-visible,
 .shell a:focus-visible,
 .shell input:focus-visible,
-.shell select:focus-visible {
+.shell select:focus-visible,
+.shell textarea:focus-visible {
   outline: 2px solid var(--as-focus);
   outline-offset: 3px;
 }
@@ -113,6 +114,57 @@
   background: var(--organizer-paper);
   border: 1px solid var(--organizer-line);
   border-radius: 24px;
+}
+
+.announcementCard {
+  grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr);
+  align-items: start;
+  margin-bottom: 20px;
+}
+
+.announcementIcon {
+  color: var(--as-gold-ink);
+  background: var(--as-surface-gold);
+}
+
+.announcementForm {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.announcementForm label {
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.announcementForm textarea {
+  width: 100%;
+  min-height: 86px;
+  padding: 10px 12px;
+  border: 1px solid var(--as-control-line);
+  border-radius: 10px;
+  background: var(--as-field);
+  color: var(--organizer-ink);
+  resize: vertical;
+}
+
+.announcementForm textarea::placeholder { color: var(--organizer-muted); }
+.announcementForm textarea[aria-invalid="true"] { border-color: var(--as-danger-ink); }
+
+.announcementActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  color: var(--organizer-muted);
+  font-size: 0.77rem;
+}
+
+.announcementOverLimit {
+  color: var(--as-danger-ink);
+  font-weight: 800;
 }
 
 .gateCard {
@@ -866,6 +918,7 @@
 }
 
 @media (max-width: 840px) {
+  .announcementCard { grid-template-columns: minmax(0, 1fr); }
   .grid {
     grid-template-columns: minmax(0, 1fr);
   }

@@ -1,7 +1,8 @@
-import { env } from "cloudflare:workers";
+import { env, waitUntil } from "cloudflare:workers";
 import { OFFLINE_CODE_LENGTH, deriveOfflineLookup, offlineParticipantIdentity, openOfflineRecipient, type SealedAssignment } from "../offline-crypto";
 import { steamGameCover, type SteamGame } from "../steam-games";
-import { hasGitStorage, isSealedAssignment, readEvent, updateEvent, type DrawStatus, type StoredEvent, type StoredParticipant } from "./git-store";
+import { postSystemMessage } from "./chat-store";
+import { hasGitStorage, isSealedAssignment, readEvent, readEventForChat, updateEvent, type DrawStatus, type StoredEvent, type StoredParticipant } from "./git-store";
 import { ApiError } from "./http";
 import { completeProfile, parseName, parseNickname, parsePhoto, updateProfile, type ProfileFields } from "./profile";
 import { ACCESS_CODE_LENGTH, browserSessionFingerprint, createBrowserSessionToken, deriveAccessLookup, isBrowserSessionToken, openVaultCode, sealVaultCode } from "./vault";
@@ -250,6 +251,13 @@ export async function memberDirectory(input: unknown) {
   return { members, viewerId: viewer.id };
 }
 
+export async function chatMemberSession(input: unknown, fresh = false) {
+  const auth = await sessionAuthorization(input);
+  if (!hasGitStorage()) throw invalidSession();
+  const event = await (fresh ? readEvent() : readEventForChat());
+  return { event, viewer: authorizedParticipant(event, auth) };
+}
+
 export async function logoutParticipant(input: unknown) {
   if (!isBrowserSessionToken(input) || !hasGitStorage()) return { ok: true };
   const fingerprint = await browserSessionFingerprint(input);
@@ -272,12 +280,34 @@ export async function saveParticipantProfile(input: AuthorizationInput & Profile
     return participantSession(updated, "demo", event);
   }
 
+  let wishesChanged = false;
   const updated = await updateEvent((current) => {
-    const person = updateProfile(authorizedParticipant(current, auth), input);
+    const previous = authorizedParticipant(current, auth);
+    const person = updateProfile(previous, input);
     requireCompleteProfile(person);
+    wishesChanged = wishIds(previous) !== wishIds(person);
     return replaceParticipant(current, person);
   });
-  return participantSession(authorizedParticipant(updated, auth), "live", updated);
+  const person = authorizedParticipant(updated, auth);
+  if (wishesChanged) notifyChat(`${chatName(person)} atualizou a lista de desejos.`, `wishes:${crypto.randomUUID()}`);
+  return participantSession(person, "live", updated);
+}
+
+function wishIds(person: StoredParticipant) {
+  return (person.games ?? []).map(({ id }) => id).sort((first, second) => first - second).join(",");
+}
+
+function chatName(person: StoredParticipant) {
+  return person.nickname ? `${person.name} (${person.nickname})` : person.name;
+}
+
+function notifyChat(text: string, key: string) {
+  const task = postSystemMessage(text, key).catch(() => undefined);
+  try {
+    waitUntil(task);
+  } catch {
+    // Chat delivery must not change the result of the participant action.
+  }
 }
 
 function incorrectReveal(mode: Mode, event: StoredEvent | null) {
@@ -355,14 +385,23 @@ export function saveAvailability(input: RevealInput & { days?: unknown }) {
   return updateAfterReveal(input, (person) => ({ ...person, unavailableDays: days }), true);
 }
 
-export function recordSeen(input: RevealInput) {
+export async function recordSeen(input: RevealInput) {
   const revealedAt = new Date().toISOString();
-  return updateAfterReveal(input, async (person, roundId, code) => ({
-    ...person,
-    revealedAt: person.revealedAt ?? revealedAt,
-    verifiedRevealRoundId: roundId,
-    drawCode: person.sealed && !person.drawCode && code ? await sealVaultCode("draw", person.id, code) : person.drawCode,
-  }));
+  let notification: { text: string; key: string } | undefined;
+  const result = await updateAfterReveal(input, async (person, roundId, code) => {
+    notification = person.verifiedRevealRoundId === roundId ? undefined : {
+      text: `${chatName(person)} abriu o resultado do sorteio.`,
+      key: `reveal:${roundId}:${person.id}`,
+    };
+    return {
+      ...person,
+      revealedAt: person.revealedAt ?? revealedAt,
+      verifiedRevealRoundId: roundId,
+      drawCode: person.sealed && !person.drawCode && code ? await sealVaultCode("draw", person.id, code) : person.drawCode,
+    };
+  });
+  if (notification) notifyChat(notification.text, notification.key);
+  return result;
 }
 
 export async function requireOrganizer(request: Request) {

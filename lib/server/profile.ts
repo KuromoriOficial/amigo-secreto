@@ -21,7 +21,7 @@ export function parseNickname(input: unknown, name: string) {
   return nickname || undefined;
 }
 
-function validPhoto(photo: unknown): photo is string {
+export function validPhoto(photo: unknown): photo is string {
   if (typeof photo !== "string" || photo.length > 100_000) return false;
   const match = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(photo);
   if (!match || match[2].length < 16 || match[2].length % 4 !== 0) return false;
