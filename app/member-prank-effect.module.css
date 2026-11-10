@@ -1,0 +1,171 @@
+.scare,
+.tomatoScene {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  overscroll-behavior: contain;
+}
+
+.scare { background: #000; color: #fff; }
+.scare::backdrop { background: #000; }
+
+.video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.scareControls {
+  position: absolute;
+  z-index: 2;
+  top: max(13px, env(safe-area-inset-top));
+  right: max(13px, env(safe-area-inset-right));
+  display: flex;
+  gap: 6px;
+}
+
+.scareControls button,
+.tomatoNotice button {
+  display: inline-flex;
+  min-width: 38px;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: 1px solid #ffffff82;
+  border-radius: 8px;
+  background: #080808ec;
+  color: #fff;
+  cursor: pointer;
+  font-family: var(--as-sans);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.scareControls .iconControl, .tomatoNotice button { padding: 0; }
+.scareControls button:hover { background: #292929; }
+.scareControls button:focus-visible, .tomatoNotice button:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+
+.ghost {
+  position: absolute;
+  z-index: 1;
+  inset-inline: max(17px, env(safe-area-inset-left)) max(17px, env(safe-area-inset-right));
+  bottom: clamp(62px, 13vh, 145px);
+  margin: 0;
+  color: #fffafa;
+  font-family: var(--as-display);
+  font-size: clamp(27px, 5.4vw, 70px);
+  font-weight: 600;
+  line-height: 1.12;
+  overflow-wrap: anywhere;
+  text-align: center;
+  text-shadow: 0 1px 3px #000, 0 0 12px #000, 0 0 24px #000, 0 0 5px #fff8;
+  pointer-events: none;
+  animation: ghost-breathe 3.35s ease-in-out infinite;
+}
+
+.still { animation: none; }
+
+@keyframes ghost-breathe {
+  0%, 100% { opacity: .03; }
+  43%, 58% { opacity: 1; }
+}
+
+.tomatoScene { background: transparent; }
+.tomatoScene::backdrop { background: transparent; }
+
+.tomatoArt {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.tomato,
+.splat {
+  grid-area: 1 / 1;
+  transform-origin: center;
+}
+
+.tomato {
+  z-index: 1;
+  width: clamp(84px, 17vw, 190px);
+  filter: drop-shadow(0 11px 12px #3515124a);
+  animation: tomato-flight .46s cubic-bezier(.42, .03, .81, .6) both;
+}
+
+.splat {
+  width: min(85vw, 535px, 80dvh);
+  filter: drop-shadow(0 7px 17px #3d130b53);
+  animation: tomato-impact 1.91s .39s cubic-bezier(.19, .7, .3, 1) both;
+}
+
+@keyframes tomato-flight {
+  0% { opacity: 0; transform: translate(-39vw, -34vh) rotate(-76deg) scale(.11); }
+  17% { opacity: 1; }
+  88% { opacity: 1; transform: translate(-2vw, -1vh) rotate(12deg) scale(1.08); }
+  100% { opacity: 0; transform: translate(0, 0) rotate(16deg) scale(1.35); }
+}
+
+@keyframes tomato-impact {
+  0% { opacity: 0; transform: rotate(-5deg) scale(.26); }
+  11% { opacity: .98; transform: rotate(0) scale(1.08); }
+  25%, 69% { opacity: .95; transform: rotate(0) scale(1); }
+  100% { opacity: 0; transform: translateY(12px) scale(1.025); }
+}
+
+.tomatoNotice {
+  position: absolute;
+  z-index: 2;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: max(13px, env(safe-area-inset-bottom));
+  left: max(12px, env(safe-area-inset-left));
+  display: flex;
+  width: fit-content;
+  max-width: calc(100% - 28px);
+  align-items: center;
+  gap: 10px;
+  margin: 0 auto;
+  padding: 4px 4px 4px 11px;
+  border: 1px solid var(--as-border-red);
+  border-radius: 10px;
+  background: var(--as-surface-red);
+  box-shadow: 0 4px 14px #36181030;
+  color: var(--as-danger-ink);
+}
+
+.tomatoNotice p { margin: 0; font-size: 12px; font-weight: 800; line-height: 1.4; overflow-wrap: anywhere; }
+.tomatoNotice button { min-width: 34px; min-height: 34px; flex: none; border-color: var(--as-border-red); background: var(--as-paper); color: var(--as-danger-ink); }
+.tomatoNotice button:focus-visible { outline-color: var(--as-focus); }
+.tomatoNotice button:hover { background: var(--as-subtle); }
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ghost, .splat { animation: none; }
+  .tomato { display: none; }
+}

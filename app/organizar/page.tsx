@@ -1,10 +1,11 @@
 "use client";
 
-import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from "react";
+import { type ChangeEvent, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { apiUrl, assetUrl, isStaticFrontend, pageUrl } from "../../lib/frontend-paths";
 import { createOfflineDraw, type OfflineDraw } from "../../lib/offline-crypto";
 import { isSteamFriendCode, type SteamGame } from "../../lib/steam-games";
 import ThemeToggle from "../theme-toggle";
+import { PresencePanel, type EffectRequest, type PresenceMember } from "./presence-panel";
 import { SteamPicker } from "./steam-picker";
 import styles from "./organizar.module.css";
 
@@ -34,6 +35,7 @@ type OrganizerAction =
 type DrawIntent = { action: "generate" | "import"; kind: DrawKind } | { action: "cancel-draw" } | { action: "reset-draw" };
 type AuditAction = { action: "audit"; confirmation: "REVELAR" };
 type AnnouncementAction = { action: "announce"; text: string; requestId: string };
+type PresenceAction = { action: "prank-presence" } | { action: "prank" } & EffectRequest;
 type AuditPerson = { id: string; name: string; nickname?: string };
 type AuditPair = { giver: AuditPerson; recipient: AuditPerson };
 type IconName = "gift" | "arrow" | "lock" | "calendar" | "copy" | "people" | "check" | "megaphone";
@@ -97,7 +99,7 @@ function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
   return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
-async function organizerFetch(key: string, action?: OrganizerAction | AuditAction | AnnouncementAction, signal?: AbortSignal) {
+async function organizerFetch(key: string, action?: OrganizerAction | AuditAction | AnnouncementAction | PresenceAction, signal?: AbortSignal) {
   const response = await fetch(apiUrl("/api/organizer"), {
     method: action ? "POST" : "GET",
     headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), ...(action ? { "Content-Type": "application/json" } : {}) },
@@ -317,6 +319,20 @@ export default function OrganizerPage() {
   const participantName = useRef<HTMLInputElement>(null);
   const auditInput = useRef<HTMLInputElement>(null);
   const drawConfirmation = useRef<HTMLDivElement>(null);
+
+  const loadPresence = useCallback(async (signal: AbortSignal) => {
+    const { online } = await organizerFetch(key, { action: "prank-presence" }, signal);
+    if (!Array.isArray(online)) throw new Error("Não foi possível atualizar quem está online.");
+    return online as PresenceMember[];
+  }, [key]);
+
+  const sendEffect = useCallback(async (effect: EffectRequest, signal: AbortSignal) => {
+    const { ok, target } = await organizerFetch(key, { action: "prank", ...effect }, signal);
+    if (ok !== true || !target || typeof target !== "object" || !("name" in target) || typeof target.name !== "string") {
+      throw new Error("Não foi possível confirmar o envio do efeito.");
+    }
+    return target.name;
+  }, [key]);
 
   useEffect(() => {
     if (isStaticFrontend) return;
@@ -729,6 +745,7 @@ export default function OrganizerPage() {
           )}
 
           <AnnouncementComposer organizerKey={key} />
+          <PresencePanel loadPresence={loadPresence} sendEffect={sendEffect} />
 
           <div className={styles.grid}>
             <section className={styles.card} aria-labelledby="participants-title">

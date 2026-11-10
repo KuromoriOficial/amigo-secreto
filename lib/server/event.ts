@@ -255,7 +255,7 @@ export async function chatMemberSession(input: unknown, fresh = false) {
   const auth = await sessionAuthorization(input);
   if (!hasGitStorage()) throw invalidSession();
   const event = await (fresh ? readEvent() : readEventForChat());
-  return { event, viewer: authorizedParticipant(event, auth) };
+  return { event, viewer: authorizedParticipant(event, auth), sessionFingerprint: auth.fingerprint };
 }
 
 export async function logoutParticipant(input: unknown) {

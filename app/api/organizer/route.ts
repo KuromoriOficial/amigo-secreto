@@ -1,6 +1,7 @@
 import { announceChat } from "@/lib/server/chat";
 import { auditPairs, cancelDraw, editParticipant, generateAccessCodes, importOfflineDraw, organizerState, registerDrawCodes, requireOrganizer, resetDraw, updateRoster } from "@/lib/server/event";
 import { endpoint, readBody } from "@/lib/server/http";
+import { organizerPrankPresence, sendOrganizerPrank } from "@/lib/server/pranks";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,8 @@ export function POST(request: Request) {
       case "credentials": return generateAccessCodes();
       case "edit-profile": return editParticipant(body);
       case "announce": return announceChat(body.text, body.requestId);
+      case "prank-presence": return organizerPrankPresence();
+      case "prank": return sendOrganizerPrank(body);
       case "audit": return auditPairs(body.confirmation);
       default: return updateRoster(body.action, body.participants);
     }
